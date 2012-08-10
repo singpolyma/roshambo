@@ -16,9 +16,15 @@ database chan = loop Map.empty
 				writeChan c (Map.lookup k m)
 				loop m
 
+data RPSChoice = Rock | Paper | Scissors deriving (Read, Show, Eq)
+
+data RPSGame =
+	RPSGameStart RPSChoice |
+	RPSGameFinish RPSChoice RPSChoice
+
 data DatabaseMessage =
-	SetKey String String |
-	GetKey String (Chan (Maybe String))
+	SetKey String RPSGame |
+	GetKey String (Chan (Maybe RPSGame))
 
 syncCall c v = liftIO $ do
 	r <- newChan

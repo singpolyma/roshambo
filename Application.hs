@@ -48,11 +48,11 @@ showUTF8 = textToUTF8 . T.pack . show
 
 on404 _ = return $ responseLBS notFound404 [(s"Content-Type", s"text/plain")] (s"Not Found")
 
-bodyBytestring req = liftIO $ runResourceT $ (requestBody req) $$ fold mappend mempty
+bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
 home db _ = do
 	id <- uniqId
-	return $ responseLBS seeOther303 [(s"Location", T.encodeUtf8 $ T.pack $ "/game/" ++ id)] mempty
+	redirect seeOther303 [] (T.encodeUtf8 $ T.pack $ "/game/" ++ id)
 	where
 	-- Can't liftIO the do block directly because of the loop
 	uniqId = liftIO uniqId'
@@ -64,13 +64,21 @@ home db _ = do
 			_ -> uniqId'
 
 showGame db id _ = do
-	-- TODO: probably just always show form unless there's a winner
-	v <- dbGet db id
-	case v of
-		Nothing ->
-			return $ responseLBS ok200 [(s"Content-Type", s"text/plain")] (s"No one has entered yet")
-		Just choice ->
-			return $ responseLBS ok200 [(s"Content-Type", s"text/plain")] (showUTF8 choice)
+	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
+	hastache ok200 [(s"Content-Type", s"text/html")] "rps.mustache" context
+	where
+	rpsWinner Rock     Paper    = 0
+	rpsWinner Paper    Rock     = 1
+	rpsWinner Rock     Scissors = 0
+	rpsWinner Scissors Rock     = 1
+	rpsWinner Scissors Paper    = 0
+	rpsWinner Paper    Scissors = 1
+
+	ctx (Just (RPSGameStart a))    "first"  = MuVariable $ show a
+	ctx (Just (RPSGameFinish a _)) "first"  = MuVariable $ show a
+	ctx (Just (RPSGameFinish _ b)) "second" = MuVariable $ show b
+	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ "Player " ++ show (rpsWinner a b + 1)
+	ctx _ _ = MuNothing
 
 createChoice db id req = do
 	body <- fmap parseQueryText (bodyBytestring req)
@@ -80,7 +88,10 @@ createChoice db id req = do
 		Just choice -> do
 			v <- dbGet db id
 			case v of
-				Nothing -> do
-					dbSet db id (T.unpack choice)
-					return $ responseLBS ok200 [(s"Content-Type", s"text/plain")] (s"Set!")
-				Just otherChoice -> error "TODO: choose winner"
+				Nothing ->
+					dbSet db id (RPSGameStart $ read $ T.unpack choice) -- TODO: handle bad input
+				Just (RPSGameStart otherChoice) ->
+					dbSet db id (RPSGameFinish otherChoice $ read $ T.unpack choice) -- TODO: handle bad input
+				_ ->
+					return () -- TODO: error page. You cannot make a choice, there is a winner
+			redirect seeOther303 [] (T.encodeUtf8 $ T.pack $ "/game/" ++ id)

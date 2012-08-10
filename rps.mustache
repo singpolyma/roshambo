@@ -1,12 +1,22 @@
+{{#first}}
+	<p>Player 1 chose {{first}}.</p>
+{{/first}}
+
+{{#second}}
+	<p>Player 2 chose {{second}}.</p>
+{{/second}}
+
 {{#winner}}
-Congratulations, {{winner}} wins!
+	<p>{{winner}} wins!</p>
 {{/winner}}
 
 {{^winner}}
-Please choose one:
-<form method="post" action="">
-	<input type="submit" name="choice" value="Rock" />
-	<input type="submit" name="choice" value="Paper" />
-	<input type="submit" name="choice" value="Scissors" />
-</form>
+	<section>
+		<h1>Please choose one</h1>
+		<form method="post" action="">
+			<input type="submit" name="choice" value="Rock" />
+			<input type="submit" name="choice" value="Paper" />
+			<input type="submit" name="choice" value="Scissors" />
+		</form>
+	</section>
 {{/winner}}
