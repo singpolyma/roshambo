@@ -10,11 +10,16 @@ import System.Random (randomR, getStdRandom)
 import Data.String
 
 import Network.Wai
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status, ResponseHeaders)
 import Data.Conduit (($$), runResourceT, ResourceT)
 import Data.Conduit.List (fold)
 
+import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
+import qualified Text.Hastache as Hastache (htmlEscape)
+import qualified Text.Hastache.Context as Hastache (mkStrContext)
+
 import Data.Text (Text)
+import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Lazy as LZ
@@ -25,6 +30,16 @@ import Database
 
 s :: (IsString a) => String -> a
 s = fromString
+
+hastache :: (Functor m, MonadIO m) => Status -> ResponseHeaders -> FilePath -> MuContext m -> m Response
+hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
+		hastacheFileBuilder
+			(MuConfig Hastache.htmlEscape Nothing (Just "mustache")) pth ctx
+	)
+
+-- TODO require absolute URI for uri with types?
+redirect :: (Monad m) => Status -> ResponseHeaders -> ByteString -> m Response
+redirect status headers uri = return $ responseLBS status ((s"Location", uri):headers) mempty
 
 textToUTF8 txt = LZ.fromChunks [T.encodeUtf8 txt]
 
