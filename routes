@@ -1,0 +1,3 @@
+GET  /       => home
+GET  /game/: => showGame
+POST /game/: => createChoice
