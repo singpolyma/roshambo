@@ -4,6 +4,7 @@ import Control.Concurrent
 import Control.Monad
 import Control.Monad.Trans
 import Numeric (showHex)
+import Data.Char
 import Data.Word
 import Data.List
 import System.Random (randomR, getStdRandom)
@@ -28,9 +29,6 @@ import Data.Monoid (mappend, mempty)
 
 import Database
 
-s :: (IsString a) => String -> a
-s = fromString
-
 hastache :: (Functor m, MonadIO m) => Status -> ResponseHeaders -> FilePath -> MuContext m -> m Response
 hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
 		hastacheFileBuilder
@@ -39,14 +37,30 @@ hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
 
 -- TODO require absolute URI for uri with types?
 redirect :: (Monad m) => Status -> ResponseHeaders -> ByteString -> m Response
-redirect status headers uri = return $ responseLBS status ((s"Location", uri):headers) mempty
+redirect status headers uri = return $ responseLBS status ((fromString "Location", uri):headers) mempty
+
+stringAscii :: (IsString s) => String -> Maybe s
+stringAscii s
+	| all isAscii s = Just (fromString s)
+	| otherwise     = Nothing
+
+s :: (IsString s) => String -> s
+s istr = let Just str = stringAscii istr in str
+
+stringHeaders :: (IsString s1, IsString s2) => [(String, String)] -> Maybe [(s1, s2)]
+stringHeaders = sequence . map (\(n,v) ->
+		liftM2 (,) (stringAscii n) (stringAscii v)
+	)
+
+stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
+stringHeaders' hs = let Just headers = stringHeaders hs in headers
 
 textToUTF8 txt = LZ.fromChunks [T.encodeUtf8 txt]
 
 showUTF8 :: (Show a) => a -> LZ.ByteString
 showUTF8 = textToUTF8 . T.pack . show
 
-on404 _ = return $ responseLBS notFound404 [(s"Content-Type", s"text/plain")] (s"Not Found")
+on404 _ = return $ responseLBS notFound404 (stringHeaders' [("Content-Type", "text/plain")]) (s"Not Found")
 
 bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
@@ -65,7 +79,7 @@ home db _ = do
 
 showGame db id _ = do
 	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
-	hastache ok200 [(s"Content-Type", s"text/html")] "rps.mustache" context
+	hastache ok200 (stringHeaders' [("Content-Type", "text/html")]) "rps.mustache" context
 	where
 	rpsWinner Rock     Paper    = 0
 	rpsWinner Paper    Rock     = 1
@@ -84,7 +98,7 @@ createChoice db id req = do
 	body <- fmap parseQueryText (bodyBytestring req)
 	case join $ lookup (T.pack "choice") body of
 		Nothing ->
-			return $ responseLBS badRequest400 [(s"Content-Type", s"text/plain")] (s"You didn't send a choice!")
+			return $ responseLBS badRequest400 (stringHeaders' [("Content-Type", "text/plain")]) (s"You didn't send a choice!")
 		Just choice -> do
 			v <- dbGet db id
 			case v of
