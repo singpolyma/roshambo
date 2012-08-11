@@ -20,7 +20,6 @@ import qualified Text.Hastache.Context as Hastache (mkStrContext)
 
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TL
 
@@ -94,7 +93,7 @@ stringHeader :: (IsString s1, IsString s2) => (String, String) -> Maybe (s1, s2)
 stringHeader (n, v) = liftM2 (,) (stringAscii n) (stringAscii v)
 
 stringHeaders :: (IsString s1, IsString s2) => [(String, String)] -> Maybe [(s1, s2)]
-stringHeaders = sequence . map stringHeader
+stringHeaders = mapM stringHeader
 
 stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
 stringHeaders' hs = let Just headers = stringHeaders hs in headers
