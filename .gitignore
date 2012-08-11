@@ -3,3 +3,4 @@ dist
 *.hi
 report.html
 Routes.hs
+Main

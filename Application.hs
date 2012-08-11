@@ -1,31 +1,26 @@
 module Application where
 
-import Control.Concurrent
-import Control.Monad
-import Control.Monad.Trans
-import Numeric (showHex)
 import Data.Char
 import Data.Word
-import Data.List
+import Control.Monad
+import Numeric (showHex)
+import Data.Monoid (mappend, mempty)
+import Data.String (IsString, fromString)
+import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
-import Data.String
 
-import Network.Wai
+import Network.Wai (Request(..), Response(..), responseLBS)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status, ResponseHeaders)
-import Data.Conduit (($$), runResourceT, ResourceT)
+import Data.Conduit (($$), runResourceT)
 import Data.Conduit.List (fold)
 
 import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
 import qualified Text.Hastache as Hastache (htmlEscape)
 import qualified Text.Hastache.Context as Hastache (mkStrContext)
 
-import Data.Text (Text)
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.ByteString.Lazy as LZ
-
-import Data.Monoid (mappend, mempty)
 
 import Database
 
@@ -55,14 +50,10 @@ stringHeaders = sequence . map (\(n,v) ->
 stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
 stringHeaders' hs = let Just headers = stringHeaders hs in headers
 
-textToUTF8 txt = LZ.fromChunks [T.encodeUtf8 txt]
-
-showUTF8 :: (Show a) => a -> LZ.ByteString
-showUTF8 = textToUTF8 . T.pack . show
+bodyBytestring :: (MonadIO m) => Request -> m ByteString
+bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
 on404 _ = return $ responseLBS notFound404 (stringHeaders' [("Content-Type", "text/plain")]) (s"Not Found")
-
-bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
 home db _ = do
 	id <- uniqId
@@ -81,12 +72,14 @@ showGame db id _ = do
 	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html")]) "rps.mustache" context
 	where
+	rpsWinner :: RPSChoice -> RPSChoice -> Int
 	rpsWinner Rock     Paper    = 0
 	rpsWinner Paper    Rock     = 1
 	rpsWinner Rock     Scissors = 0
 	rpsWinner Scissors Rock     = 1
 	rpsWinner Scissors Paper    = 0
 	rpsWinner Paper    Scissors = 1
+	rpsWinner _ _ = -1 -- TODO Deal with ties
 
 	ctx (Just (RPSGameStart a))    "first"  = MuVariable $ show a
 	ctx (Just (RPSGameFinish a _)) "first"  = MuVariable $ show a
