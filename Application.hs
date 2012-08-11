@@ -10,7 +10,7 @@ import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status, ResponseHeaders)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status, ResponseHeaders, Header)
 import Data.Conduit (($$), runResourceT)
 import Data.Conduit.List (fold)
 
@@ -21,8 +21,29 @@ import qualified Text.Hastache.Context as Hastache (mkStrContext)
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TL
 
 import Database
+
+mapHeader :: (ResponseHeaders -> ResponseHeaders) -> Response -> Response
+mapHeader f (ResponseFile s h b1 b2) = ResponseFile s (f h) b1 b2
+mapHeader f (ResponseBuilder s h b) = ResponseBuilder s (f h) b
+mapHeader f (ResponseSource s h b) = ResponseSource s (f h) b
+
+defHeader :: Header -> Response -> Response
+defHeader h = mapHeader (defHeader' h)
+
+defHeader' :: Header -> ResponseHeaders -> ResponseHeaders
+defHeader' (n, v) headers = case lookup n headers of
+		Just _  -> headers
+		Nothing -> (n, v):headers
+
+replaceHeader :: Header -> Response -> Response
+replaceHeader h = mapHeader (replaceHeader' h)
+
+replaceHeader' :: Header -> ResponseHeaders -> ResponseHeaders
+replaceHeader' (n, v) = ((n,v):) . filter ((/=n) . fst)
 
 hastache :: (Functor m, MonadIO m) => Status -> ResponseHeaders -> FilePath -> MuContext m -> m Response
 hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
@@ -30,22 +51,31 @@ hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
 			(MuConfig Hastache.htmlEscape Nothing (Just "mustache")) pth ctx
 	)
 
+text :: (MonadIO m) => Status -> ResponseHeaders -> TL.Text -> m Response
+text status headers = return . defHeader defCT . responseLBS status headers . TL.encodeUtf8
+	where
+	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
+
+string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
+string status headers = text status headers . TL.pack
+
 -- TODO require absolute URI for uri with types?
+-- require that (statusCode status) >= 300 && < 400 ?
 redirect :: (Monad m) => Status -> ResponseHeaders -> ByteString -> m Response
-redirect status headers uri = return $ responseLBS status ((fromString "Location", uri):headers) mempty
+redirect status headers uri = return $ responseLBS status ((location, uri):headers) mempty
+	where
+	Just location = stringAscii "Location"
 
 stringAscii :: (IsString s) => String -> Maybe s
 stringAscii s
 	| all isAscii s = Just (fromString s)
 	| otherwise     = Nothing
 
-s :: (IsString s) => String -> s
-s istr = let Just str = stringAscii istr in str
+stringHeader :: (IsString s1, IsString s2) => (String, String) -> Maybe (s1, s2)
+stringHeader (n, v) = liftM2 (,) (stringAscii n) (stringAscii v)
 
 stringHeaders :: (IsString s1, IsString s2) => [(String, String)] -> Maybe [(s1, s2)]
-stringHeaders = sequence . map (\(n,v) ->
-		liftM2 (,) (stringAscii n) (stringAscii v)
-	)
+stringHeaders = sequence . map stringHeader
 
 stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
 stringHeaders' hs = let Just headers = stringHeaders hs in headers
@@ -53,7 +83,7 @@ stringHeaders' hs = let Just headers = stringHeaders hs in headers
 bodyBytestring :: (MonadIO m) => Request -> m ByteString
 bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
-on404 _ = return $ responseLBS notFound404 (stringHeaders' [("Content-Type", "text/plain")]) (s"Not Found")
+on404 _ = string notFound404 [] "Not Found"
 
 home db _ = do
 	id <- uniqId
@@ -91,7 +121,7 @@ createChoice db id req = do
 	body <- fmap parseQueryText (bodyBytestring req)
 	case join $ lookup (T.pack "choice") body of
 		Nothing ->
-			return $ responseLBS badRequest400 (stringHeaders' [("Content-Type", "text/plain")]) (s"You didn't send a choice!")
+			string badRequest400 [] "You didn't send a choice!"
 		Just choice -> do
 			v <- dbGet db id
 			case v of
