@@ -10,7 +10,7 @@ import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status, ResponseHeaders, Header)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status(..), ResponseHeaders, Header)
 import Data.Conduit (($$), runResourceT)
 import Data.Conduit.List (fold)
 
@@ -23,6 +23,9 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TL
+
+import Network.URI (URI(..), URIAuth(..))
+import qualified Network.URI as URI
 
 import Database
 
@@ -59,12 +62,28 @@ text status headers = return . defHeader defCT . responseLBS status headers . TL
 string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
 string status headers = text status headers . TL.pack
 
--- TODO require absolute URI for uri with types?
--- require that (statusCode status) >= 300 && < 400 ?
-redirect :: (Monad m) => Status -> ResponseHeaders -> ByteString -> m Response
-redirect status headers uri = return $ responseLBS status ((location, uri):headers) mempty
+statusIsRedirect :: Status -> Bool
+statusIsRedirect (Status {statusCode=code}) = code >= 300 && code < 400
+
+uriIsAbsolute :: URI -> Bool
+uriIsAbsolute (URI {
+		uriScheme = scheme,
+		uriAuthority = Just (URIAuth {uriRegName = reg})
+	}) = scheme /= "" && reg /= ""
+uriIsAbsolute _ = False
+
+redirect :: Status -> ResponseHeaders -> URI -> Maybe Response
+redirect status headers uri
+	| statusIsRedirect status && uriIsAbsolute uri = do
+		uriBS <- stringAscii (show uri)
+		return $ responseLBS status ((location, uriBS):headers) mempty
+	| otherwise = Nothing
 	where
 	Just location = stringAscii "Location"
+
+redirect' :: (Monad m) => Status -> ResponseHeaders -> URI -> m Response
+redirect' status headers uri =
+	let Just r = redirect status headers uri in return r
 
 stringAscii :: (IsString s) => String -> Maybe s
 stringAscii s
@@ -83,11 +102,18 @@ stringHeaders' hs = let Just headers = stringHeaders hs in headers
 bodyBytestring :: (MonadIO m) => Request -> m ByteString
 bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
 
+buildURI :: URI -> String -> Maybe URI
+buildURI root rel =
+	URI.parseRelativeReference rel >>= (`URI.relativeTo` root)
+
+buildURI' :: URI -> String -> URI
+buildURI' root rel = let Just uri = buildURI root rel in uri
+
 on404 _ = string notFound404 [] "Not Found"
 
-home db _ = do
+home root db _ = do
 	id <- uniqId
-	redirect seeOther303 [] (T.encodeUtf8 $ T.pack $ "/game/" ++ id)
+	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
 	where
 	-- Can't liftIO the do block directly because of the loop
 	uniqId = liftIO uniqId'
@@ -98,7 +124,7 @@ home db _ = do
 			Nothing -> return id
 			_ -> uniqId'
 
-showGame db id _ = do
+showGame _ db id _ = do
 	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
 	where
@@ -117,7 +143,7 @@ showGame db id _ = do
 	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ "Player " ++ show (rpsWinner a b + 1)
 	ctx _ _ = MuNothing
 
-createChoice db id req = do
+createChoice root db id req = do
 	body <- fmap parseQueryText (bodyBytestring req)
 	case join $ lookup (T.pack "choice") body of
 		Nothing ->
@@ -131,4 +157,4 @@ createChoice db id req = do
 					dbSet db id (RPSGameFinish otherChoice $ read $ T.unpack choice) -- TODO: handle bad input
 				_ ->
 					return () -- TODO: error page. You cannot make a choice, there is a winner
-			redirect seeOther303 [] (T.encodeUtf8 $ T.pack $ "/game/" ++ id)
+			redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
