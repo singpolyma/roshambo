@@ -100,11 +100,11 @@ home db _ = do
 
 showGame db id _ = do
 	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
-	hastache ok200 (stringHeaders' [("Content-Type", "text/html")]) "rps.mustache" context
+	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
 	where
 	rpsWinner :: RPSChoice -> RPSChoice -> Int
-	rpsWinner Rock     Paper    = 0
-	rpsWinner Paper    Rock     = 1
+	rpsWinner Paper    Rock     = 0
+	rpsWinner Rock     Paper    = 1
 	rpsWinner Rock     Scissors = 0
 	rpsWinner Scissors Rock     = 1
 	rpsWinner Scissors Paper    = 0
