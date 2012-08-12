@@ -1,4 +1,4 @@
-Main: Main.hs Application.hs Routes.hs
+Main: Main.hs Application.hs Database.hs Routes.hs
 	ghc -Wall -fno-warn-name-shadowing $^
 
 Routes.hs: routes
