@@ -137,12 +137,14 @@ showGame _ db id _ = do
 	rpsWinner Scissors Rock     = 1
 	rpsWinner Scissors Paper    = 0
 	rpsWinner Paper    Scissors = 1
-	rpsWinner _ _ = -1 -- TODO Deal with ties
+	rpsWinner _ _ = -1
 
 	ctx (Just (RPSGameStart a))    "first"  = MuVariable $ show a
 	ctx (Just (RPSGameFinish a _)) "first"  = MuVariable $ show a
 	ctx (Just (RPSGameFinish _ b)) "second" = MuVariable $ show b
-	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ "Player " ++ show (rpsWinner a b + 1)
+	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ case rpsWinner a b of
+		(-1) -> "It's a tie!"
+		w    -> "Player " ++ show (w+1) ++ " wins!"
 	ctx _ _ = MuNothing
 
 createChoice root db id req = eitherT errorPage return $ do
