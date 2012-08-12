@@ -2,13 +2,14 @@ module Database where
 
 import Control.Concurrent (Chan, newChan, readChan, writeChan)
 import Control.Monad.Trans (MonadIO, liftIO)
+import Text.Email.Validate (EmailAddress)
 import qualified Data.Map as Map
 
 data RPSChoice = Rock | Paper | Scissors deriving (Read, Show, Eq)
 
 data RPSGame =
-	RPSGameStart RPSChoice |
-	RPSGameFinish RPSChoice RPSChoice
+	RPSGameStart (EmailAddress, RPSChoice) |
+	RPSGameFinish (EmailAddress, RPSChoice) (EmailAddress, RPSChoice)
 
 data DatabaseMessage =
 	SetKey String RPSGame |

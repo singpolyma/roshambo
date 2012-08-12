@@ -6,7 +6,7 @@ import Control.Monad
 import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
-import Control.Error (eitherT, throwT, tryRead)
+import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT)
 import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
 
@@ -24,10 +24,20 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TL
 
+import Text.Email.Validate (EmailAddress)
+import qualified Text.Email.Validate as EmailAddress (validate)
 import Network.URI (URI(..), URIAuth(..))
 import qualified Network.URI as URI
 
 import Database
+
+maybeMsg :: (Monad m) => a -> Maybe b -> EitherT a m b
+maybeMsg msg = liftEither . note msg
+
+maybeBlank :: T.Text -> Maybe T.Text
+maybeBlank t
+	| T.null t  = Nothing
+	| otherwise = Just t
 
 mapHeader :: (ResponseHeaders -> ResponseHeaders) -> Response -> Response
 mapHeader f (ResponseFile s h b1 b2) = ResponseFile s (f h) b1 b2
@@ -111,7 +121,8 @@ buildURI' root rel = let Just uri = buildURI root rel in uri
 
 on404 _ = string notFound404 [] "Not Found"
 
-errorPage e = string badRequest400 [] e
+errorPage :: (MonadIO m) => String -> m Response
+errorPage = string badRequest400 []
 
 home root db _ = do
 	id <- uniqId
@@ -139,26 +150,32 @@ showGame _ db id _ = do
 	rpsWinner Paper    Scissors = 1
 	rpsWinner _ _ = -1
 
-	ctx (Just (RPSGameStart a))    "first"  = MuVariable $ show a
-	ctx (Just (RPSGameFinish a _)) "first"  = MuVariable $ show a
-	ctx (Just (RPSGameFinish _ b)) "second" = MuVariable $ show b
-	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ case rpsWinner a b of
+	ctx (Just (RPSGameStart (_,a)))          "first"  = MuVariable $ show a
+	ctx (Just (RPSGameFinish (_,a) _))       "first"  = MuVariable $ show a
+	ctx (Just (RPSGameFinish _ (_,b)))       "second" = MuVariable $ show b
+	ctx (Just (RPSGameFinish (e1,a) (e2,b))) "winner" = MuVariable $ case rpsWinner a b of
 		(-1) -> "It's a tie!"
-		w    -> "Player " ++ show (w+1) ++ " wins!"
+		0    -> show e1 ++ " wins!"
+		1    -> show e2 ++ " wins!"
 	ctx _ _ = MuNothing
 
 createChoice root db id req = eitherT errorPage return $ do
 	body <- fmap parseQueryText (bodyBytestring req)
-	case join $ lookup (T.pack "choice") body of
-		Nothing -> throwT "You didn't send a choice!"
-		Just choice -> do
-			v <- dbGet db id
-			case v of
-				Nothing -> dbSet db id =<< RPSGameStart `fmap` tryReadRPS choice
-				Just (RPSGameStart otherChoice) ->
-					dbSet db id =<< (RPSGameFinish otherChoice) `fmap` tryReadRPS choice
-				_ -> throwT "You cannot make a new choice on a completed game!"
-			redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
+	email <- tryParseEmail =<< tryEmailParam body
+	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
+	v <- dbGet db id
+	case v of
+		Nothing -> dbSet db id =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
+		Just (RPSGameStart otherChoice) ->
+			dbSet db id =<< (\c -> RPSGameFinish otherChoice (email,c)) `fmap` tryReadRPS choice
+		_ -> throwT "You cannot make a new choice on a completed game!"
+	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
 	where
+	param body k = join $ lookup (T.pack k) body
 	tryReadRPS c = let c' = T.unpack c in
 		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
+	tryEmailParam body = maybeMsg "You didn't send an email address!"
+		(fmap T.unpack $ maybeBlank =<< param body "email")
+	tryParseEmail email = liftEither $
+		fmapL (\err -> "Error parsing email <" ++ email ++ ">\n" ++ show err)
+			(EmailAddress.validate email)
