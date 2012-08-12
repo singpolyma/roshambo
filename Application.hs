@@ -6,6 +6,7 @@ import Control.Monad
 import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
+import Control.Error (eitherT, throwT, tryRead)
 import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
 
@@ -110,6 +111,8 @@ buildURI' root rel = let Just uri = buildURI root rel in uri
 
 on404 _ = string notFound404 [] "Not Found"
 
+errorPage e = string badRequest400 [] e
+
 home root db _ = do
 	id <- uniqId
 	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
@@ -142,18 +145,18 @@ showGame _ db id _ = do
 	ctx (Just (RPSGameFinish a b)) "winner" = MuVariable $ "Player " ++ show (rpsWinner a b + 1)
 	ctx _ _ = MuNothing
 
-createChoice root db id req = do
+createChoice root db id req = eitherT errorPage return $ do
 	body <- fmap parseQueryText (bodyBytestring req)
 	case join $ lookup (T.pack "choice") body of
-		Nothing ->
-			string badRequest400 [] "You didn't send a choice!"
+		Nothing -> throwT "You didn't send a choice!"
 		Just choice -> do
 			v <- dbGet db id
 			case v of
-				Nothing ->
-					dbSet db id (RPSGameStart $ read $ T.unpack choice) -- TODO: handle bad input
+				Nothing -> dbSet db id =<< RPSGameStart `fmap` tryReadRPS choice
 				Just (RPSGameStart otherChoice) ->
-					dbSet db id (RPSGameFinish otherChoice $ read $ T.unpack choice) -- TODO: handle bad input
-				_ ->
-					return () -- TODO: error page. You cannot make a choice, there is a winner
+					dbSet db id =<< (RPSGameFinish otherChoice) `fmap` tryReadRPS choice
+				_ -> throwT "You cannot make a new choice on a completed game!"
 			redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
+	where
+	tryReadRPS c = let c' = T.unpack c in
+		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
