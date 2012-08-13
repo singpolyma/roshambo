@@ -180,8 +180,10 @@ on404 _ = string notFound404 [] "Not Found"
 appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
 
-errorPage :: (MonadIO m) => String -> m Response
-errorPage = string badRequest400 []
+errorPage :: (MonadIO m, Functor m) => String -> m Response
+errorPage msg = hastache badRequest400 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "error.mustache" context
+	where
+	context = ctxToMuContext [("errorMessage", CtxString msg)]
 
 rpsWinner :: (EmailAddress, RPSChoice) -> (EmailAddress, RPSChoice) -> Maybe EmailAddress
 rpsWinner (e,Paper)    (_,Rock)     = Just e
