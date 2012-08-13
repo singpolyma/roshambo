@@ -9,12 +9,12 @@ import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
 import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT)
-import Control.Monad.Trans (MonadIO, liftIO)
+import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status(..), ResponseHeaders, Header)
-import Data.Conduit (($$), runResourceT, Flush(..))
+import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold)
 
 import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
@@ -132,8 +132,8 @@ stringHeaders = mapM stringHeader
 stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
 stringHeaders' hs = let Just headers = stringHeaders hs in headers
 
-bodyBytestring :: (MonadIO m) => Request -> m ByteString
-bodyBytestring req = liftIO $ runResourceT $ requestBody req $$ fold mappend mempty
+bodyBytestring :: Request -> ResourceT IO ByteString
+bodyBytestring req = requestBody req $$ fold mappend mempty
 
 buildURI :: URI -> String -> Maybe URI
 buildURI root rel =
@@ -193,7 +193,7 @@ showGame _ db id _ = do
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
 
 createChoice root db id req = eitherT errorPage return $ do
-	body <- fmap parseQueryText (bodyBytestring req)
+	body <- lift $ fmap parseQueryText (bodyBytestring req)
 	email <- tryParseEmail =<< tryEmailParam body
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
 	v <- dbGet db id
