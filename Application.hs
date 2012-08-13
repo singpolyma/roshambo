@@ -26,8 +26,6 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS (split)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.Text.Lazy as TL
-import qualified Data.Text.Lazy.Encoding as TL
 
 import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
@@ -35,6 +33,7 @@ import Network.URI (URI(..), URIAuth(..))
 import qualified Network.URI as URI
 import Network.Mail.Mime
 import qualified Blaze.ByteString.Builder as Builder
+import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
 import qualified Data.CaseInsensitive as CI
 
 import Database
@@ -92,13 +91,16 @@ hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
 			(MuConfig Hastache.htmlEscape Nothing (Just "mustache")) pth ctx
 	)
 
-text :: (MonadIO m) => Status -> ResponseHeaders -> TL.Text -> m Response
-text status headers = return . defHeader defCT . responseLBS status headers . TL.encodeUtf8
+builder :: (MonadIO m) => Status -> ResponseHeaders -> Builder.Builder -> m Response
+builder status headers = return . defHeader defCT . ResponseBuilder status headers
 	where
 	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
 
 string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
-string status headers = text status headers . TL.pack
+string status headers = builder status headers . Builder.fromString
+
+text :: (MonadIO m) => Status -> ResponseHeaders -> T.Text -> m Response
+text status headers = builder status headers . Builder.fromText
 
 statusIsRedirect :: Status -> Bool
 statusIsRedirect (Status {statusCode=code}) = code >= 300 && code < 400
