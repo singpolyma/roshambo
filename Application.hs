@@ -3,6 +3,7 @@ module Application where
 import Data.Char
 import Data.Word
 import Data.Maybe
+import Data.List
 import Control.Monad
 import Control.Arrow
 import Numeric (showHex)
@@ -13,8 +14,8 @@ import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
-import Network.Wai.Parse (parseRequestBody, BackEnd)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, Status(..), ResponseHeaders, Header)
+import Network.Wai.Parse (parseRequestBody, BackEnd, parseHttpAccept)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406, Status(..), ResponseHeaders, Header)
 import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold, sinkNull)
 
@@ -22,6 +23,7 @@ import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
 import qualified Text.Hastache as Hastache (htmlEscape, decodeStr)
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS (split)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy as TL
@@ -135,6 +137,26 @@ stringHeaders = mapM stringHeader
 stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
 stringHeaders' hs = let Just headers = stringHeaders hs in headers
 
+data Pattern a = PatternAny | PatternExactly a
+
+instance (Eq a) => Eq (Pattern a) where
+	PatternAny == _ = True
+	_ == PatternAny = True
+	(PatternExactly a) == (PatternExactly b) = a == b
+
+selectAcceptType :: [String] -> [ByteString] -> Maybe String
+selectAcceptType supported accept = case supported' of
+	Just sup -> listToMaybe $ mapMaybe (\a -> lookup a sup) accept'
+	Nothing -> Nothing
+	where
+	accept' = map parseAccept accept
+	supported' = fmap (`zip` supported)
+		(mapM (fmap parseAccept . stringAscii) supported)
+	parsePattern s | s == fromString "*" = PatternAny
+	               | otherwise = PatternExactly s
+	parseAccept s = let (t:sub:_) = BS.split 0x2f s in
+		(parsePattern t, parsePattern sub)
+
 bodyBytestring :: Request -> ResourceT IO ByteString
 bodyBytestring req = requestBody req $$ fold mappend mempty
 
@@ -211,9 +233,19 @@ home root db _ = do
 			Nothing -> return id
 			_ -> uniqId'
 
-showGame _ db id _ = do
+showGame _ db id req = do
 	context <- fmap (ctxToMuContext . ctx) $ dbGet db id
-	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
+	case acceptType of
+		"text/html" ->
+			hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
+		"application/json" ->
+			string ok200 [] "hello"
+		_ -> string notAcceptable406 [] (intercalate "\n" supportedTypes)
+	where
+	acceptType = fromMaybe (head supportedTypes) acceptType'
+	acceptType' = (selectAcceptType supportedTypes . parseHttpAccept) =<<
+		lookup (fromString "Accept") (requestHeaders req)
+	supportedTypes = ["text/html", "application/json"]
 
 createChoice root db id req = eitherT errorPage return $ do
 	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
