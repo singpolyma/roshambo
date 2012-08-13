@@ -32,6 +32,8 @@ import qualified Text.Email.Validate as EmailAddress (validate)
 import Network.URI (URI(..), URIAuth(..))
 import qualified Network.URI as URI
 import Network.Mail.Mime
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
 import qualified Data.CaseInsensitive as CI
@@ -91,16 +93,20 @@ hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
 			(MuConfig Hastache.htmlEscape Nothing (Just "mustache")) pth ctx
 	)
 
-builder :: (MonadIO m) => Status -> ResponseHeaders -> Builder.Builder -> m Response
-builder status headers = return . defHeader defCT . ResponseBuilder status headers
+string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
+string status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromString
 	where
 	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
 
-string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
-string status headers = builder status headers . Builder.fromString
-
 text :: (MonadIO m) => Status -> ResponseHeaders -> T.Text -> m Response
-text status headers = builder status headers . Builder.fromText
+text status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromText
+	where
+	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
+
+json :: (MonadIO m, Aeson.ToJSON a) => Status -> ResponseHeaders -> a -> m Response
+json status headers = return . defHeader defCT . responseLBS status headers . Aeson.encode . Aeson.toJSON
+	where
+	Just defCT = stringHeader ("Content-Type", "application/json; charset=utf-8")
 
 statusIsRedirect :: Status -> Bool
 statusIsRedirect (Status {statusCode=code}) = code >= 300 && code < 400
@@ -148,7 +154,7 @@ instance (Eq a) => Eq (Pattern a) where
 
 selectAcceptType :: [String] -> [ByteString] -> Maybe String
 selectAcceptType supported accept = case supported' of
-	Just sup -> listToMaybe $ mapMaybe (\a -> lookup a sup) accept'
+	Just sup -> listToMaybe $ mapMaybe (`lookup` sup) accept'
 	Nothing -> Nothing
 	where
 	accept' = map parseAccept accept
@@ -197,6 +203,14 @@ instance Show CtxVar where
 	show (CtxBool b) = show b
 	show (CtxList xs) = show xs
 
+instance Aeson.ToJSON CtxVar where
+	toJSON (CtxString s) = Aeson.toJSON s
+	toJSON (CtxBool b) = Aeson.toJSON b
+	toJSON (CtxList xs) = Aeson.toJSON $ map (Aeson.object . map ctxPair) xs
+
+ctxPair :: (String, CtxVar) -> Aeson.Pair
+ctxPair (k, v) = (T.pack k, Aeson.toJSON v)
+
 ctxChoice :: (EmailAddress,RPSChoice) -> [(String, CtxVar)]
 ctxChoice (e,c) =
 	[("email", CtxString $ show e), ("choice", CtxString $ show c)]
@@ -222,6 +236,9 @@ ctxToMuContext xs =
 	ctxToMuType (Just (CtxList xs)) = MuList $ map ctxToMuContext xs
 	ctxToMuType Nothing = MuNothing
 
+ctxToAeson :: [(String, CtxVar)] -> Aeson.Value
+ctxToAeson = Aeson.object . map ctxPair
+
 home root db _ = do
 	id <- uniqId
 	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
@@ -236,12 +253,12 @@ home root db _ = do
 			_ -> uniqId'
 
 showGame _ db id req = do
-	context <- fmap (ctxToMuContext . ctx) $ dbGet db id
+	context <- fmap ctx $ dbGet db id
 	case acceptType of
 		"text/html" ->
-			hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
+			hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" (ctxToMuContext context)
 		"application/json" ->
-			string ok200 [] "hello"
+			json ok200 [] (ctxToAeson $ filter ((/="choices") . fst) context)
 		_ -> string notAcceptable406 [] (intercalate "\n" supportedTypes)
 	where
 	acceptType = fromMaybe (head supportedTypes) acceptType'
