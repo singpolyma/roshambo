@@ -2,7 +2,9 @@ module Application where
 
 import Data.Char
 import Data.Word
+import Data.Maybe
 import Control.Monad
+import Control.Arrow
 import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
@@ -10,9 +12,9 @@ import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT
 import Control.Monad.Trans (MonadIO, liftIO)
 import System.Random (randomR, getStdRandom)
 
-import Network.Wai (Request(..), Response(..), responseLBS)
+import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status(..), ResponseHeaders, Header)
-import Data.Conduit (($$), runResourceT)
+import Data.Conduit (($$), runResourceT, Flush(..))
 import Data.Conduit.List (fold)
 
 import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
@@ -21,6 +23,7 @@ import qualified Text.Hastache.Context as Hastache (mkStrContext)
 
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TL
 
@@ -28,6 +31,9 @@ import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
 import Network.URI (URI(..), URIAuth(..))
 import qualified Network.URI as URI
+import Network.Mail.Mime
+import qualified Blaze.ByteString.Builder as Builder
+import qualified Data.CaseInsensitive as CI
 
 import Database
 
@@ -38,6 +44,23 @@ maybeBlank :: T.Text -> Maybe T.Text
 maybeBlank t
 	| T.null t  = Nothing
 	| otherwise = Just t
+
+responseToMailPart :: (MonadIO m) => Bool -> Response -> m Part
+responseToMailPart asTxt r = do
+	body <- liftIO $ Builder.toLazyByteString `fmap` builderBody
+	return $ Part (T.decodeUtf8 contentType) contentEncode Nothing headers body
+	where
+	chunkFlatAppend m (Chunk more) = m `mappend` more
+	chunkFlatAppend m _ = m
+	headers = map (CI.original *** T.decodeUtf8) $ filter ((/=contentTypeName) . fst) headers'
+	contentType = fromMaybe defContentType $ lookup contentTypeName headers'
+	contentEncode  | asTxt     = QuotedPrintableText
+	               | otherwise = Base64
+	defContentType | asTxt     = fromString "text/plain; charset=utf-8"
+	               | otherwise = fromString "application/octet-stream"
+	builderBody = runResourceT $ body' $$ fold chunkFlatAppend mempty
+	(_, headers', body') = responseSource r
+	contentTypeName = fromString "Content-Type"
 
 mapHeader :: (ResponseHeaders -> ResponseHeaders) -> Response -> Response
 mapHeader f (ResponseFile s h b1 b2) = ResponseFile s (f h) b1 b2
@@ -121,8 +144,36 @@ buildURI' root rel = let Just uri = buildURI root rel in uri
 
 on404 _ = string notFound404 [] "Not Found"
 
+appEmail :: Address
+appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
+
 errorPage :: (MonadIO m) => String -> m Response
 errorPage = string badRequest400 []
+
+rpsWinner :: (EmailAddress, RPSChoice) -> (EmailAddress, RPSChoice) -> Maybe EmailAddress
+rpsWinner (e,Paper)    (_,Rock)     = Just e
+rpsWinner (_,Rock)     (e,Paper)    = Just e
+rpsWinner (e,Rock)     (_,Scissors) = Just e
+rpsWinner (_,Scissors) (e,Rock)     = Just e
+rpsWinner (e,Scissors) (_,Paper)    = Just e
+rpsWinner (_,Paper)    (e,Scissors) = Just e
+rpsWinner _ _ = Nothing
+
+ctx :: Maybe RPSGame -> String -> Maybe String
+ctx (Just (RPSGameStart  (_,a)  )) "first"  = Just $ show a
+ctx (Just (RPSGameFinish (_,a) _)) "first"  = Just $ show a
+ctx (Just (RPSGameFinish _ (_,b))) "second" = Just $ show b
+ctx (Just (RPSGameFinish a b))     "winner" = Just $ case rpsWinner a b of
+	Nothing -> "It's a tie!"
+	Just e  -> show e ++ " wins!"
+ctx _ _ = Nothing
+
+ctxToContext :: (Monad m) => (String -> Maybe String) -> MuContext m
+ctxToContext f = Hastache.mkStrContext g
+	where
+	g k = case f k of
+		Just s  -> MuVariable s
+		Nothing -> MuNothing
 
 home root db _ = do
 	id <- uniqId
@@ -138,26 +189,8 @@ home root db _ = do
 			_ -> uniqId'
 
 showGame _ db id _ = do
-	context <- fmap (Hastache.mkStrContext . ctx) $ dbGet db id
+	context <- fmap (ctxToContext . ctx) $ dbGet db id
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
-	where
-	rpsWinner :: RPSChoice -> RPSChoice -> Int
-	rpsWinner Paper    Rock     = 0
-	rpsWinner Rock     Paper    = 1
-	rpsWinner Rock     Scissors = 0
-	rpsWinner Scissors Rock     = 1
-	rpsWinner Scissors Paper    = 0
-	rpsWinner Paper    Scissors = 1
-	rpsWinner _ _ = -1
-
-	ctx (Just (RPSGameStart (_,a)))          "first"  = MuVariable $ show a
-	ctx (Just (RPSGameFinish (_,a) _))       "first"  = MuVariable $ show a
-	ctx (Just (RPSGameFinish _ (_,b)))       "second" = MuVariable $ show b
-	ctx (Just (RPSGameFinish (e1,a) (e2,b))) "winner" = MuVariable $ case rpsWinner a b of
-		(-1) -> "It's a tie!"
-		0    -> show e1 ++ " wins!"
-		1    -> show e2 ++ " wins!"
-	ctx _ _ = MuNothing
 
 createChoice root db id req = eitherT errorPage return $ do
 	body <- fmap parseQueryText (bodyBytestring req)
@@ -166,11 +199,23 @@ createChoice root db id req = eitherT errorPage return $ do
 	v <- dbGet db id
 	case v of
 		Nothing -> dbSet db id =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
-		Just (RPSGameStart otherChoice) ->
-			dbSet db id =<< (\c -> RPSGameFinish otherChoice (email,c)) `fmap` tryReadRPS choice
+		Just (RPSGameStart a) -> do
+			b <- fmap ((,)email) $ tryReadRPS choice
+			let rpsGame = RPSGameFinish a b
+			let context = ctx (Just rpsGame)
+			dbSet db id rpsGame
+			mailBody <- responseToMailPart True =<< hastache ok200 [] "email.mustache" (ctxToContext context)
+			liftIO $ renderSendMail Mail {
+					mailFrom    = appEmail,
+					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
+					mailCc      = [], mailBcc  = [],
+					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++id++"] " ++ fromJust (context "winner"))],
+					mailParts   = [[mailBody]]
+				}
 		_ -> throwT "You cannot make a new choice on a completed game!"
 	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
 	where
+	emailToAddress = Address Nothing . T.pack . show
 	param body k = join $ lookup (T.pack k) body
 	tryReadRPS c = let c' = T.unpack c in
 		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
