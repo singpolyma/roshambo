@@ -13,9 +13,10 @@ import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, parseQueryText, Status(..), ResponseHeaders, Header)
+import Network.Wai.Parse (parseRequestBody, BackEnd)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, Status(..), ResponseHeaders, Header)
 import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
-import Data.Conduit.List (fold)
+import Data.Conduit.List (fold, sinkNull)
 
 import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
 import qualified Text.Hastache as Hastache (htmlEscape)
@@ -36,6 +37,9 @@ import qualified Blaze.ByteString.Builder as Builder
 import qualified Data.CaseInsensitive as CI
 
 import Database
+
+noStoreFileUploads :: BackEnd ()
+noStoreFileUploads _ _ = sinkNull
 
 maybeMsg :: (Monad m) => a -> Maybe b -> EitherT a m b
 maybeMsg msg = liftEither . note msg
@@ -193,7 +197,8 @@ showGame _ db id _ = do
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
 
 createChoice root db id req = eitherT errorPage return $ do
-	body <- lift $ fmap parseQueryText (bodyBytestring req)
+	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
+	let body = map (T.decodeUtf8 *** T.decodeUtf8) body'
 	email <- tryParseEmail =<< tryEmailParam body
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
 	v <- dbGet db id
@@ -216,7 +221,7 @@ createChoice root db id req = eitherT errorPage return $ do
 	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
 	where
 	emailToAddress = Address Nothing . T.pack . show
-	param body k = join $ lookup (T.pack k) body
+	param body k = lookup (T.pack k) body
 	tryReadRPS c = let c' = T.unpack c in
 		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
 	tryEmailParam body = maybeMsg "You didn't send an email address!"
