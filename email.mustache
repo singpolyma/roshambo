@@ -1,5 +1,10 @@
-Player 1 chose {{first}}.
+{{#choices}}
+{{email}} chose {{choice}}.
+{{/choices}}
 
-Player 2 chose {{second}}.
-
-{{winner}}
+{{#winner}}
+{{winner}} wins!
+{{/winner}}
+{{^winner}}
+It's a tie!
+{{/winner}}

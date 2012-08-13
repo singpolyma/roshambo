@@ -19,8 +19,7 @@ import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold, sinkNull)
 
 import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
-import qualified Text.Hastache as Hastache (htmlEscape)
-import qualified Text.Hastache.Context as Hastache (mkStrContext)
+import qualified Text.Hastache as Hastache (htmlEscape, decodeStr)
 
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
@@ -163,21 +162,41 @@ rpsWinner (e,Scissors) (_,Paper)    = Just e
 rpsWinner (_,Paper)    (e,Scissors) = Just e
 rpsWinner _ _ = Nothing
 
-ctx :: Maybe RPSGame -> String -> Maybe String
-ctx (Just (RPSGameStart  (_,a)  )) "first"  = Just $ show a
-ctx (Just (RPSGameFinish (_,a) _)) "first"  = Just $ show a
-ctx (Just (RPSGameFinish _ (_,b))) "second" = Just $ show b
-ctx (Just (RPSGameFinish a b))     "winner" = Just $ case rpsWinner a b of
-	Nothing -> "It's a tie!"
-	Just e  -> show e ++ " wins!"
-ctx _ _ = Nothing
+data CtxVar =
+	CtxString String |
+	CtxBool Bool |
+	CtxList [[(String, CtxVar)]]
+	deriving (Eq)
 
-ctxToContext :: (Monad m) => (String -> Maybe String) -> MuContext m
-ctxToContext f = Hastache.mkStrContext g
+instance Show CtxVar where
+	show (CtxString s) = s
+	show (CtxBool b) = show b
+	show (CtxList xs) = show xs
+
+ctxChoice :: (EmailAddress,RPSChoice) -> [(String, CtxVar)]
+ctxChoice (e,c) =
+	[("email", CtxString $ show e), ("choice", CtxString $ show c)]
+
+ctx :: Maybe RPSGame -> [(String, CtxVar)]
+ctx (Just (RPSGameStart a)) = [("choices", CtxList $ [ctxChoice a])]
+ctx (Just (RPSGameFinish a b)) = winner ++ [
+		("choices", CtxList $ [ctxChoice a, ctxChoice b]),
+		("finished", CtxBool $ True)
+	]
 	where
-	g k = case f k of
-		Just s  -> MuVariable s
-		Nothing -> MuNothing
+	winner = case rpsWinner a b of
+		Just e -> [("winner", CtxString $ show e)]
+		Nothing -> []
+ctx _ = []
+
+ctxToMuContext :: (Monad m) => [(String, CtxVar)] -> MuContext m
+ctxToMuContext xs =
+	ctxToMuType . (`lookup` xs) . Hastache.decodeStr
+	where
+	ctxToMuType (Just (CtxString s)) = MuVariable s
+	ctxToMuType (Just (CtxBool s)) = MuBool s
+	ctxToMuType (Just (CtxList xs)) = MuList $ map ctxToMuContext xs
+	ctxToMuType Nothing = MuNothing
 
 home root db _ = do
 	id <- uniqId
@@ -193,7 +212,7 @@ home root db _ = do
 			_ -> uniqId'
 
 showGame _ db id _ = do
-	context <- fmap (ctxToContext . ctx) $ dbGet db id
+	context <- fmap (ctxToMuContext . ctx) $ dbGet db id
 	hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" context
 
 createChoice root db id req = eitherT errorPage return $ do
@@ -208,13 +227,16 @@ createChoice root db id req = eitherT errorPage return $ do
 			b <- fmap ((,)email) $ tryReadRPS choice
 			let rpsGame = RPSGameFinish a b
 			let context = ctx (Just rpsGame)
+			let winTxt = case lookup "winner" context of
+				Just e -> show e ++ " wins!"
+				Nothing -> "It's a tie!"
 			dbSet db id rpsGame
-			mailBody <- responseToMailPart True =<< hastache ok200 [] "email.mustache" (ctxToContext context)
+			mailBody <- responseToMailPart True =<< hastache ok200 [] "email.mustache" (ctxToMuContext context)
 			liftIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
 					mailCc      = [], mailBcc  = [],
-					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++id++"] " ++ fromJust (context "winner"))],
+					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++id++"] " ++ winTxt)],
 					mailParts   = [[mailBody]]
 				}
 		_ -> throwT "You cannot make a new choice on a completed game!"

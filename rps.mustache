@@ -1,16 +1,18 @@
-{{#first}}
-	<p>Player 1 chose {{first}}.</p>
-{{/first}}
-
-{{#second}}
-	<p>Player 2 chose {{second}}.</p>
-{{/second}}
+{{#choices}}
+	<p>{{email}} chose {{choice}}.</p>
+{{/choices}}
 
 {{#winner}}
-	<p>{{winner}}</p>
+	<p>{{winner}} wins!</p>
 {{/winner}}
 
-{{^winner}}
+{{#finished}}
+	{{^winner}}
+		It's a tie!
+	{{/winner}}
+{{/finished}}
+
+{{^finished}}
 	<section>
 		<h1>Enter your email address and choose one</h1>
 		<form method="post" action="">
