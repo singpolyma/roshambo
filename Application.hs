@@ -202,10 +202,10 @@ ctxChoice (e,c) =
 	[("email", CtxString $ show e), ("choice", CtxString $ show c)]
 
 ctx :: Maybe RPSGame -> [(String, CtxVar)]
-ctx (Just (RPSGameStart a)) = [("choices", CtxList $ [ctxChoice a])]
+ctx (Just (RPSGameStart a)) = [("choices", CtxList [ctxChoice a])]
 ctx (Just (RPSGameFinish a b)) = winner ++ [
-		("choices", CtxList $ [ctxChoice a, ctxChoice b]),
-		("finished", CtxBool $ True)
+		("choices", CtxList [ctxChoice a, ctxChoice b]),
+		("finished", CtxBool True)
 	]
 	where
 	winner = case rpsWinner a b of
