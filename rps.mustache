@@ -1,26 +1,55 @@
-{{#choices}}
-	<p>{{email}} chose {{choice}}.</p>
-{{/choices}}
+<html>
+	<head>
+		<title>Roshambo Game</title>
 
-{{#winner}}
-	<p>{{winner}} wins!</p>
-{{/winner}}
+		{{^finished}}
+			<script type="text/javascript">
+				function mkRequest() {
+					var s = document.createElement('script');
+					s.type = 'text/javascript';
+					s.src = '?callback=reloadOnFinished&_accept=text/javascript';
+					document.body.appendChild(s);
+				}
 
-{{#finished}}
-	{{^winner}}
-		It's a tie!
-	{{/winner}}
-{{/finished}}
+				function reloadOnFinished(data) {
+					if(data.finished) {
+						window.location.reload();
+					} else {
+						setTimeout(function(){mkRequest();}, 1000);
+					}
+				}
 
-{{^finished}}
-	<section>
-		<h1>Enter your email address and choose one</h1>
-		<form method="post" action="">
-			<input type="email" name="email" />
+				window.onload = mkRequest;
+			</script>
+		{{/finished}}
+	</head>
 
-			<input type="submit" name="choice" value="Rock" />
-			<input type="submit" name="choice" value="Paper" />
-			<input type="submit" name="choice" value="Scissors" />
-		</form>
-	</section>
-{{/winner}}
+	<body>
+		{{#choices}}
+			<p>{{email}} chose {{choice}}.</p>
+		{{/choices}}
+
+		{{#winner}}
+			<p>{{winner}} wins!</p>
+		{{/winner}}
+
+		{{#finished}}
+			{{^winner}}
+				It's a tie!
+			{{/winner}}
+		{{/finished}}
+
+		{{^finished}}
+			<section>
+				<h1>Enter your email address and choose one</h1>
+				<form method="post" action="">
+					<input type="email" name="email" />
+
+					<input type="submit" name="choice" value="Rock" />
+					<input type="submit" name="choice" value="Paper" />
+					<input type="submit" name="choice" value="Scissors" />
+				</form>
+			</section>
+		{{/winner}}
+	</body>
+</html>

@@ -8,6 +8,9 @@ import Network.URI (parseAbsoluteURI)
 
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.RequestLogger (logStdoutDev)
+import Network.Wai.Middleware.Autohead (autohead)
+import Network.Wai.Middleware.Jsonp (jsonp)
+import Network.Wai.Middleware.AcceptOverride (acceptOverride)
 
 import Network.Wai.Dispatch
 import Application
@@ -24,5 +27,5 @@ main = main' . map parseAbsoluteURI =<< getArgs
 		putStrLn "Running..."
 		chan <- newChan
 		forkIO_ (database chan)
-		run 3000 (logStdoutDev $ dispatch on404 $ routes root chan)
+		run 3000 (logStdoutDev $ autohead $ acceptOverride $ jsonp $ dispatch on404 $ routes root chan)
 	main' _ = hPutStrLn stderr "Usage: ./Main <Root URI>"
