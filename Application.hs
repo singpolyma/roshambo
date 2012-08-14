@@ -16,12 +16,12 @@ import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
 import Network.Wai.Parse (parseRequestBody, BackEnd, parseHttpAccept)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406, Status(..), ResponseHeaders, Header)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406, statusIsRedirection, Status(..), ResponseHeaders, Header)
 import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold, sinkNull)
 
-import Text.Hastache (hastacheFileBuilder, MuConfig(..), MuType(..), MuContext)
-import qualified Text.Hastache as Hastache (htmlEscape, decodeStr)
+import Network.Wai.Hastache (hastacheHTML, hastacheText, MuType(..), MuContext)
+import qualified Text.Hastache as Hastache (decodeStr)
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS (split)
@@ -88,12 +88,6 @@ replaceHeader h = mapHeader (replaceHeader' h)
 replaceHeader' :: Header -> ResponseHeaders -> ResponseHeaders
 replaceHeader' (n, v) = ((n,v):) . filter ((/=n) . fst)
 
-hastache :: (Functor m, MonadIO m) => Status -> ResponseHeaders -> FilePath -> MuContext m -> m Response
-hastache status headers pth ctx = fmap (ResponseBuilder status headers) (
-		hastacheFileBuilder
-			(MuConfig Hastache.htmlEscape Nothing (Just "mustache")) pth ctx
-	)
-
 string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
 string status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromString
 	where
@@ -109,9 +103,6 @@ json status headers = return . defHeader defCT . responseLBS status headers . Ae
 	where
 	Just defCT = stringHeader ("Content-Type", "application/json; charset=utf-8")
 
-statusIsRedirect :: Status -> Bool
-statusIsRedirect (Status {statusCode=code}) = code >= 300 && code < 400
-
 uriIsAbsolute :: URI -> Bool
 uriIsAbsolute (URI {
 		uriScheme = scheme,
@@ -121,7 +112,7 @@ uriIsAbsolute _ = False
 
 redirect :: Status -> ResponseHeaders -> URI -> Maybe Response
 redirect status headers uri
-	| statusIsRedirect status && uriIsAbsolute uri = do
+	| statusIsRedirection status && uriIsAbsolute uri = do
 		uriBS <- stringAscii (show uri)
 		return $ responseLBS status ((location, uriBS):headers) mempty
 	| otherwise = Nothing
@@ -182,7 +173,7 @@ appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
 
 errorPage :: (MonadIO m, Functor m) => String -> m Response
-errorPage msg = hastache badRequest400 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "error.mustache" context
+errorPage msg = hastacheHTML badRequest400 [] "error.mustache" context
 	where
 	context = ctxToMuContext [("errorMessage", CtxString msg)]
 
@@ -259,7 +250,7 @@ showGame _ db id req = do
 	context <- fmap ctx $ dbGet db id
 	case acceptType of
 		"text/html" ->
-			hastache ok200 (stringHeaders' [("Content-Type", "text/html; charset=utf-8")]) "rps.mustache" (ctxToMuContext context)
+			hastacheHTML ok200 [] "rps.mustache" (ctxToMuContext context)
 		"application/json" ->
 			json ok200 [] (ctxToAeson $ filter ((/="choices") . fst) context)
 		_ -> string notAcceptable406 [] (intercalate "\n" supportedTypes)
@@ -289,7 +280,7 @@ createChoice root db id req = eitherT errorPage return $ do
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
 			tryIO $ dbSet db id rpsGame
-			mailBody <- responseToMailPart True =<< hastache ok200 [] "email.mustache" (ctxToMuContext context)
+			mailBody <- responseToMailPart True =<< hastacheText ok200 [] "email.mustache" (ctxToMuContext context)
 			tryIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
