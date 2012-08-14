@@ -9,7 +9,8 @@ import Control.Arrow
 import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
-import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT)
+import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT(..))
+import Control.Exception (try, SomeException)
 import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
@@ -268,14 +269,18 @@ showGame _ db id req = do
 		lookup (fromString "Accept") (requestHeaders req)
 	supportedTypes = ["text/html", "application/json"]
 
+tryIO :: (MonadIO m, Functor m) => IO a -> EitherT String m a
+tryIO io =
+	EitherT . fmap (fmapL show) $ liftIO $ (try :: IO a -> IO (Either SomeException a)) io
+
 createChoice root db id req = eitherT errorPage return $ do
 	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
 	let body = map (T.decodeUtf8 *** T.decodeUtf8) body'
 	email <- tryParseEmail =<< tryEmailParam body
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
-	v <- dbGet db id
+	v <- tryIO $ dbGet db id
 	case v of
-		Nothing -> dbSet db id =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
+		Nothing -> (tryIO . dbSet db id) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
 		Just (RPSGameStart a) -> do
 			b <- fmap ((,)email) $ tryReadRPS choice
 			let rpsGame = RPSGameFinish a b
@@ -283,9 +288,9 @@ createChoice root db id req = eitherT errorPage return $ do
 			let winTxt = case lookup "winner" context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
-			dbSet db id rpsGame
+			tryIO $ dbSet db id rpsGame
 			mailBody <- responseToMailPart True =<< hastache ok200 [] "email.mustache" (ctxToMuContext context)
-			liftIO $ renderSendMail Mail {
+			tryIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
 					mailCc      = [], mailBcc  = [],
