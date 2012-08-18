@@ -31,7 +31,7 @@ import qualified Data.Text.Encoding as T
 
 import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
-import Network.URI (URI(..), URIAuth(..))
+import Network.URI (URI(..), URIAuth(..), uriIsAbsolute)
 import qualified Network.URI as URI
 import Network.Mail.Mime
 import qualified Data.Aeson as Aeson
@@ -107,13 +107,6 @@ json :: (MonadIO m, Aeson.ToJSON a) => Status -> ResponseHeaders -> a -> m Respo
 json status headers = return . defHeader defCT . responseLBS status headers . Aeson.encode . Aeson.toJSON
 	where
 	Just defCT = stringHeader ("Content-Type", "application/json; charset=utf-8")
-
-uriIsAbsolute :: URI -> Bool
-uriIsAbsolute (URI {
-		uriScheme = scheme,
-		uriAuthority = Just (URIAuth {uriRegName = reg})
-	}) = scheme /= "" && reg /= ""
-uriIsAbsolute _ = False
 
 redirect :: Status -> ResponseHeaders -> URI -> Maybe Response
 redirect status headers uri

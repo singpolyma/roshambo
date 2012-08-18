@@ -4,7 +4,7 @@ import System.Environment (getArgs)
 import System.IO (stderr, hPutStrLn)
 import Control.Monad (void)
 import Control.Concurrent
-import Network.URI (parseAbsoluteURI)
+import Network.URI (parseAbsoluteURI, URI(..))
 
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.RequestLogger (logStdoutDev)
@@ -23,7 +23,7 @@ forkIO_ f = void $ forkIO (void f)
 main :: IO ()
 main = main' . map parseAbsoluteURI =<< getArgs
 	where
-	main' [Just root] | uriIsAbsolute root = do
+	main' [Just root@(URI {uriAuthority = Just _})] = do
 		putStrLn "Running..."
 		chan <- newChan
 		forkIO_ (database chan)
