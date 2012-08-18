@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Application where
 
 import Data.Char
@@ -40,6 +41,10 @@ import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
 import qualified Data.CaseInsensitive as CI
 
 import Database
+#include "PathHelpers.hs"
+
+uriRelativeTo :: URI -> URI -> URI
+uriRelativeTo other root = let Just uri = URI.relativeTo root other in uri
 
 noStoreFileUploads :: BackEnd ()
 noStoreFileUploads _ _ = sinkNull
@@ -160,13 +165,6 @@ selectAcceptType supported accept = case supported' of
 bodyBytestring :: Request -> ResourceT IO ByteString
 bodyBytestring req = requestBody req $$ fold mappend mempty
 
-buildURI :: URI -> String -> Maybe URI
-buildURI root rel =
-	URI.parseRelativeReference rel >>= (`URI.relativeTo` root)
-
-buildURI' :: URI -> String -> URI
-buildURI' root rel = let Just uri = buildURI root rel in uri
-
 on404 _ = string notFound404 [] "Not Found"
 
 appEmail :: Address
@@ -235,7 +233,7 @@ ctxToAeson = Aeson.object . map ctxPair
 
 home root db _ = do
 	id <- uniqId
-	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
+	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath id)
 	where
 	-- Can't liftIO the do block directly because of the loop
 	uniqId = liftIO uniqId'
@@ -289,7 +287,7 @@ createChoice root db id req = eitherT errorPage return $ do
 					mailParts   = [[mailBody]]
 				}
 		_ -> throwT "You cannot make a new choice on a completed game!"
-	redirect' seeOther303 [] (buildURI' root ("/game/" ++ id))
+	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath id)
 	where
 	emailToAddress = Address Nothing . T.pack . show
 	param body k = lookup (T.pack k) body
