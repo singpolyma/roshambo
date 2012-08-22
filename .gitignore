@@ -3,4 +3,5 @@ dist
 *.hi
 report.html
 Routes.hs
+PathHelpers.hs
 Main
