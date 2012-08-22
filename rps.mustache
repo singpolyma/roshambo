@@ -25,9 +25,11 @@
 	</head>
 
 	<body>
-		{{#choices}}
-			<p>{{email}} chose {{choice}}.</p>
-		{{/choices}}
+		{{#finished}}
+			{{#choices}}
+				<p>{{email}} chose {{choice}}.</p>
+			{{/choices}}
+		{{/finished}}
 
 		{{#winner}}
 			<p>{{winner}} wins!</p>
