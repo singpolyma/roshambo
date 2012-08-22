@@ -30,7 +30,7 @@ import qualified Data.Text.Encoding as T
 
 import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
-import Network.URI (URI(..), URIAuth(..), uriIsAbsolute)
+import Network.URI (URI(..), uriIsAbsolute)
 import qualified Network.URI as URI
 import Network.Mail.Mime
 import qualified Data.Aeson as Aeson
