@@ -10,8 +10,7 @@ import Control.Arrow
 import Numeric (showHex)
 import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
-import Control.Error (eitherT, throwT, note, liftEither, fmapL, tryRead, EitherT(..))
-import Control.Exception (try, SomeException)
+import Control.Error (eitherT, throwT, note, hoistEither, fmapL, tryRead, EitherT(..), scriptIO)
 import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
@@ -50,7 +49,7 @@ noStoreFileUploads :: BackEnd ()
 noStoreFileUploads _ _ = sinkNull
 
 maybeMsg :: (Monad m) => a -> Maybe b -> EitherT a m b
-maybeMsg msg = liftEither . note msg
+maybeMsg msg = hoistEither . note msg
 
 maybeBlank :: T.Text -> Maybe T.Text
 maybeBlank t
@@ -251,18 +250,14 @@ showGame _ db id req = do
 		lookup (fromString "Accept") (requestHeaders req)
 	supportedTypes = ["text/html", "application/json"]
 
-tryIO :: (MonadIO m, Functor m) => IO a -> EitherT String m a
-tryIO io =
-	EitherT . fmap (fmapL show) $ liftIO $ (try :: IO a -> IO (Either SomeException a)) io
-
 createChoice root db id req = eitherT errorPage return $ do
 	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
 	let body = map (T.decodeUtf8 *** T.decodeUtf8) body'
 	email <- tryParseEmail =<< tryEmailParam body
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
-	v <- tryIO $ dbGet db id
+	v <- scriptIO $ dbGet db id
 	case v of
-		Nothing -> (tryIO . dbSet db id) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
+		Nothing -> (scriptIO . dbSet db id) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
 		Just (RPSGameStart a) -> do
 			b <- fmap ((,)email) $ tryReadRPS choice
 			let rpsGame = RPSGameFinish a b
@@ -270,9 +265,9 @@ createChoice root db id req = eitherT errorPage return $ do
 			let winTxt = case lookup "winner" context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
-			tryIO $ dbSet db id rpsGame
+			scriptIO $ dbSet db id rpsGame
 			mailBody <- responseToMailPart True =<< hastacheText ok200 [] "email.mustache" (ctxToMuContext context)
-			tryIO $ renderSendMail Mail {
+			scriptIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
 					mailCc      = [], mailBcc  = [],
@@ -288,6 +283,6 @@ createChoice root db id req = eitherT errorPage return $ do
 		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
 	tryEmailParam body = maybeMsg "You didn't send an email address!"
 		(fmap T.unpack $ maybeBlank =<< param body "email")
-	tryParseEmail email = liftEither $
+	tryParseEmail email = hoistEither $
 		fmapL (\err -> "Error parsing email <" ++ email ++ ">\n" ++ show err)
 			(EmailAddress.validate email)
