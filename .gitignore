@@ -4,4 +4,5 @@ dist
 report.html
 Routes.hs
 PathHelpers.hs
+MustacheTemplates.hs
 Main

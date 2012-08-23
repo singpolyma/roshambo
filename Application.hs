@@ -20,9 +20,6 @@ import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAc
 import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold, sinkNull)
 
-import Network.Wai.Hastache (hastacheHTML, hastacheText, MuType(..), MuContext)
-import qualified Text.Hastache as Hastache (decodeStr)
-
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS (split)
 import qualified Data.Text as T
@@ -34,13 +31,23 @@ import Network.URI (URI(..), uriIsAbsolute)
 import qualified Network.URI as URI
 import Network.Mail.Mime
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Types as Aeson
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
 import qualified Data.CaseInsensitive as CI
 
+import MustacheTemplates
 import Database
+import Records
 #include "PathHelpers.hs"
+
+htmlEscape :: String -> String
+htmlEscape = concatMap escChar
+	where
+	escChar '&' = "&amp;"
+	escChar '"' = "&quot;"
+	escChar '<' = "&lt;"
+	escChar '>' = "&gt;"
+	escChar c   = [c]
 
 uriRelativeTo :: URI -> URI -> URI
 uriRelativeTo other root = let Just uri = URI.relativeTo root other in uri
@@ -163,9 +170,9 @@ appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
 
 errorPage :: (MonadIO m, Functor m) => String -> m Response
-errorPage msg = hastacheHTML badRequest400 [] "error.mustache" context
+errorPage msg = return $ ResponseBuilder badRequest400 headers (viewError htmlEscape $ ErrorMessage msg)
 	where
-	context = ctxToMuContext [("errorMessage", CtxString msg)]
+	Just headers = stringHeaders [("Content-Type", "text/html; charset=utf8")]
 
 rpsWinner :: (EmailAddress, RPSChoice) -> (EmailAddress, RPSChoice) -> Maybe EmailAddress
 rpsWinner (e,Paper)    (_,Rock)     = Just e
@@ -176,52 +183,15 @@ rpsWinner (e,Scissors) (_,Paper)    = Just e
 rpsWinner (_,Paper)    (e,Scissors) = Just e
 rpsWinner _ _ = Nothing
 
-data CtxVar =
-	CtxString String |
-	CtxBool Bool |
-	CtxList [[(String, CtxVar)]]
-	deriving (Eq)
 
-instance Show CtxVar where
-	show (CtxString s) = s
-	show (CtxBool b) = show b
-	show (CtxList xs) = show xs
+ctxChoice :: (EmailAddress,RPSChoice) -> ChoiceRecord
+ctxChoice (e,c) = ChoiceRecord (show e) (show c)
 
-instance Aeson.ToJSON CtxVar where
-	toJSON (CtxString s) = Aeson.toJSON s
-	toJSON (CtxBool b) = Aeson.toJSON b
-	toJSON (CtxList xs) = Aeson.toJSON $ map (Aeson.object . map ctxPair) xs
-
-ctxPair :: (String, CtxVar) -> Aeson.Pair
-ctxPair (k, v) = (T.pack k, Aeson.toJSON v)
-
-ctxChoice :: (EmailAddress,RPSChoice) -> [(String, CtxVar)]
-ctxChoice (e,c) =
-	[("email", CtxString $ show e), ("choice", CtxString $ show c)]
-
-ctx :: Maybe RPSGame -> [(String, CtxVar)]
-ctx (Just (RPSGameStart a)) = [("choices", CtxList [ctxChoice a])]
-ctx (Just (RPSGameFinish a b)) = winner ++ [
-		("choices", CtxList [ctxChoice a, ctxChoice b]),
-		("finished", CtxBool True)
-	]
-	where
-	winner = case rpsWinner a b of
-		Just e -> [("winner", CtxString $ show e)]
-		Nothing -> []
-ctx _ = []
-
-ctxToMuContext :: (Monad m) => [(String, CtxVar)] -> MuContext m
-ctxToMuContext xs =
-	ctxToMuType . (`lookup` xs) . Hastache.decodeStr
-	where
-	ctxToMuType (Just (CtxString s)) = MuVariable s
-	ctxToMuType (Just (CtxBool s)) = MuBool s
-	ctxToMuType (Just (CtxList xs)) = MuList $ map ctxToMuContext xs
-	ctxToMuType Nothing = MuNothing
-
-ctxToAeson :: [(String, CtxVar)] -> Aeson.Value
-ctxToAeson = Aeson.object . map ctxPair
+ctx :: Maybe RPSGame -> GameContext
+ctx (Just (RPSGameStart a)) = GameContext Nothing False [ctxChoice a]
+ctx (Just (RPSGameFinish a b)) =
+	GameContext (fmap show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
+ctx _ = GameContext Nothing False []
 
 home root db _ = do
 	id <- uniqId
@@ -240,42 +210,43 @@ showGame _ db id req = do
 	context <- fmap ctx $ dbGet db id
 	case acceptType of
 		"text/html" ->
-			hastacheHTML ok200 [] "rps.mustache" (ctxToMuContext context)
+			return $ ResponseBuilder ok200 htmlHeader (viewRps htmlEscape context)
 		"application/json" ->
-			json ok200 [] (ctxToAeson $ filter ((/="choices") . fst) context)
+			json ok200 [] context
 		_ -> string notAcceptable406 [] (intercalate "\n" supportedTypes)
 	where
+	Just htmlHeader = stringHeaders [("Content-Type", "text/html; charset=utf8")]
 	acceptType = fromMaybe (head supportedTypes) acceptType'
 	acceptType' = (selectAcceptType supportedTypes . parseHttpAccept) =<<
 		lookup (fromString "Accept") (requestHeaders req)
 	supportedTypes = ["text/html", "application/json"]
 
-createChoice root db id req = eitherT errorPage return $ do
+createChoice root db gid req = eitherT errorPage return $ do
 	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
 	let body = map (T.decodeUtf8 *** T.decodeUtf8) body'
 	email <- tryParseEmail =<< tryEmailParam body
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
-	v <- scriptIO $ dbGet db id
+	v <- scriptIO $ dbGet db gid
 	case v of
-		Nothing -> (scriptIO . dbSet db id) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
+		Nothing -> (scriptIO . dbSet db gid) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
 		Just (RPSGameStart a) -> do
 			b <- fmap ((,)email) $ tryReadRPS choice
 			let rpsGame = RPSGameFinish a b
 			let context = ctx (Just rpsGame)
-			let winTxt = case lookup "winner" context of
+			let winTxt = case winner context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
-			scriptIO $ dbSet db id rpsGame
-			mailBody <- responseToMailPart True =<< hastacheText ok200 [] "email.mustache" (ctxToMuContext context)
+			scriptIO $ dbSet db gid rpsGame
+			mailBody <- responseToMailPart True $ ResponseBuilder ok200 [] (viewEmail id context)
 			scriptIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
 					mailCc      = [], mailBcc  = [],
-					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++id++"] " ++ winTxt)],
+					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++gid++"] " ++ winTxt)],
 					mailParts   = [[mailBody]]
 				}
 		_ -> throwT "You cannot make a new choice on a completed game!"
-	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath id)
+	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath gid)
 	where
 	emailToAddress = Address Nothing . T.pack . show
 	param body k = lookup (T.pack k) body
