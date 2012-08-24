@@ -8,7 +8,7 @@ PathHelpers.hs: routes
 	../route-generator/dist/build/routeGenerator/routeGenerator -p -n 2 $^ > $@
 
 MustacheTemplates.hs: Records.hs view/rps.mustache view/error.mustache view/email.mustache
-	../mustache2hs/mustache2hs -m Records.hs view/error.mustache ErrorMessage view/rps.mustache GameContext view/email.mustache GameContext > $@
+	../mustache2hs/dist/build/mustache2hs/mustache2hs -m Records.hs view/error.mustache ErrorMessage view/rps.mustache GameContext view/email.mustache GameContext > $@
 
 clean:
 	find -name '*.o' -o -name '*.hi' | xargs $(RM)
