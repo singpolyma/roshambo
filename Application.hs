@@ -1,17 +1,14 @@
 {-# LANGUAGE CPP #-}
 module Application where
 
-import Data.Char
-import Data.Word
-import Data.Maybe
-import Data.List
-import Control.Monad
-import Control.Arrow
+import Prelude (show)
+import BasicPrelude hiding (intercalate, show)
+
+import Data.Maybe (listToMaybe)
+import Data.Char (isAscii)
 import Numeric (showHex)
-import Data.Monoid (mappend, mempty)
 import Data.String (IsString, fromString)
 import Control.Error (eitherT, throwT, note, hoistEither, fmapL, tryRead, EitherT(..), scriptIO)
-import Control.Monad.Trans (MonadIO, liftIO, lift)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
@@ -20,7 +17,6 @@ import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAc
 import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
 import Data.Conduit.List (fold, sinkNull)
 
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS (split)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -58,7 +54,7 @@ noStoreFileUploads _ _ = sinkNull
 maybeMsg :: (Monad m) => a -> Maybe b -> EitherT a m b
 maybeMsg msg = hoistEither . note msg
 
-maybeBlank :: T.Text -> Maybe T.Text
+maybeBlank :: Text -> Maybe Text
 maybeBlank t
 	| T.null t  = Nothing
 	| otherwise = Just t
@@ -104,7 +100,7 @@ string status headers = return . defHeader defCT . ResponseBuilder status header
 	where
 	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
 
-text :: (MonadIO m) => Status -> ResponseHeaders -> T.Text -> m Response
+text :: (MonadIO m) => Status -> ResponseHeaders -> Text -> m Response
 text status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromText
 	where
 	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
@@ -162,7 +158,7 @@ selectAcceptType supported accept = case supported' of
 		(parsePattern t, parsePattern sub)
 
 bodyBytestring :: Request -> ResourceT IO ByteString
-bodyBytestring req = requestBody req $$ fold mappend mempty
+bodyBytestring req = requestBody req $$ fold (++) empty
 
 on404 _ = string notFound404 [] "Not Found"
 
@@ -190,7 +186,7 @@ ctxChoice (e,c) = ChoiceRecord (show e) (show c)
 ctx :: Maybe RPSGame -> GameContext
 ctx (Just (RPSGameStart a)) = GameContext Nothing False [ctxChoice a]
 ctx (Just (RPSGameFinish a b)) =
-	GameContext (fmap show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
+	GameContext (map show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
 ctx _ = GameContext Nothing False []
 
 home root db _ = do
@@ -200,14 +196,14 @@ home root db _ = do
 	-- Can't liftIO the do block directly because of the loop
 	uniqId = liftIO uniqId'
 	uniqId' = do
-		id <- fmap (`showHex` "") $ getStdRandom (randomR (minBound,maxBound :: Word32))
+		id <- (`showHex` "") <$> getStdRandom (randomR (minBound,maxBound :: Word32))
 		v <- dbGet db id
 		case v of
 			Nothing -> return id
 			_ -> uniqId'
 
 showGame _ db id req = do
-	context <- fmap ctx $ dbGet db id
+	context <- ctx <$> dbGet db id
 	case acceptType of
 		"text/html" ->
 			return $ ResponseBuilder ok200 htmlHeader (viewRps htmlEscape context)
@@ -228,9 +224,9 @@ createChoice root db gid req = eitherT errorPage return $ do
 	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
 	v <- scriptIO $ dbGet db gid
 	case v of
-		Nothing -> (scriptIO . dbSet db gid) =<< (\c -> RPSGameStart (email,c)) `fmap` tryReadRPS choice
+		Nothing -> (scriptIO . dbSet db gid) =<< (\c -> RPSGameStart (email,c)) <$> tryReadRPS choice
 		Just (RPSGameStart a) -> do
-			b <- fmap ((,)email) $ tryReadRPS choice
+			b <- ((,)email) <$> tryReadRPS choice
 			let rpsGame = RPSGameFinish a b
 			let context = ctx (Just rpsGame)
 			let winTxt = case winner context of
@@ -253,7 +249,7 @@ createChoice root db gid req = eitherT errorPage return $ do
 	tryReadRPS c = let c' = T.unpack c in
 		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
 	tryEmailParam body = maybeMsg "You didn't send an email address!"
-		(fmap T.unpack $ maybeBlank =<< param body "email")
+		(map T.unpack $ maybeBlank =<< param body "email")
 	tryParseEmail email = hoistEither $
 		fmapL (\err -> "Error parsing email <" ++ email ++ ">\n" ++ show err)
 			(EmailAddress.validate email)
