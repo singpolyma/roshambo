@@ -8,7 +8,7 @@ import Data.Maybe (listToMaybe)
 import Data.Char (isAscii)
 import Numeric (showHex)
 import Data.String (IsString, fromString)
-import Control.Error (eitherT, throwT, note, hoistEither, fmapL, tryRead, EitherT(..), scriptIO)
+import Control.Error (eitherT, throwT, hush, note, hoistEither, fmapL, readErr, EitherT(..), scriptIO)
 import System.Random (randomR, getStdRandom)
 
 import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
@@ -50,14 +50,6 @@ uriRelativeTo other root = let Just uri = URI.relativeTo root other in uri
 
 noStoreFileUploads :: BackEnd ()
 noStoreFileUploads _ _ = sinkNull
-
-maybeMsg :: (Monad m) => a -> Maybe b -> EitherT a m b
-maybeMsg msg = hoistEither . note msg
-
-maybeBlank :: Text -> Maybe Text
-maybeBlank t
-	| T.null t  = Nothing
-	| otherwise = Just t
 
 responseToMailPart :: (MonadIO m) => Bool -> Response -> m Part
 responseToMailPart asTxt r = do
@@ -217,17 +209,38 @@ showGame _ db id req = do
 		lookup (fromString "Accept") (requestHeaders req)
 	supportedTypes = ["text/html", "application/json"]
 
+requiredParam :: (Eq k) => e -> (v -> Maybe v) -> (v -> Either e a) -> k -> [(k, v)] -> Either e a
+requiredParam notPresent maybePresent parser k =
+	parser <=< note notPresent . (maybePresent <=< lookup k)
+
+optionalParam :: (Eq k) => (v -> Maybe v) -> (v -> Either e a) -> k -> [(k, v)] -> Maybe a
+optionalParam maybePresent parser k =
+	hush . parser <=< maybePresent <=< lookup k
+
+blankNotPresent :: Text -> Maybe Text
+blankNotPresent t
+	| T.null t  = Nothing
+	| otherwise = Just t
+
+parseCreateChoiceRequest :: [(Text, Text)] -> Either String (EmailAddress, RPSChoice)
+parseCreateChoiceRequest body = (,)
+	<$> requiredParam "You didn't send an email address!" blankNotPresent parseEmailErr (T.pack "email") body
+	<*> requiredParam "You didn't send a choice!" Just readRPSErr (T.pack "choice") body
+	where
+	readRPSErr choiceText = let c = T.unpack choiceText in
+		readErr ("\""++c++"\" is not one of: Rock, Paper, Scissors") c
+	parseEmailErr emailText = let e = T.unpack emailText in
+		fmapL (\err -> "Error parsing email <" ++ e ++ ">\n" ++ show err)
+			(EmailAddress.validate e)
+
 createChoice root db gid req = eitherT errorPage return $ do
-	(body', _) <- lift $ parseRequestBody noStoreFileUploads req
-	let body = map (T.decodeUtf8 *** T.decodeUtf8) body'
-	email <- tryParseEmail =<< tryEmailParam body
-	choice <- maybeMsg "You didn't send a choice!" $ param body "choice"
+	(body, _) <- lift $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
+	(email, choice) <- hoistEither $ parseCreateChoiceRequest body
 	v <- scriptIO $ dbGet db gid
 	case v of
-		Nothing -> (scriptIO . dbSet db gid) =<< (\c -> RPSGameStart (email,c)) <$> tryReadRPS choice
+		Nothing -> scriptIO $ dbSet db gid (RPSGameStart (email,choice))
 		Just (RPSGameStart a) -> do
-			b <- ((,)email) <$> tryReadRPS choice
-			let rpsGame = RPSGameFinish a b
+			let rpsGame = RPSGameFinish a (email, choice)
 			let context = ctx (Just rpsGame)
 			let winTxt = case winner context of
 				Just e -> show e ++ " wins!"
@@ -236,7 +249,7 @@ createChoice root db gid req = eitherT errorPage return $ do
 			mailBody <- responseToMailPart True $ ResponseBuilder ok200 [] (viewEmail id context)
 			scriptIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
-					mailTo      = [emailToAddress (fst a), emailToAddress (fst b)],
+					mailTo      = [emailToAddress (fst a), emailToAddress email],
 					mailCc      = [], mailBcc  = [],
 					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++gid++"] " ++ winTxt)],
 					mailParts   = [[mailBody]]
@@ -245,11 +258,3 @@ createChoice root db gid req = eitherT errorPage return $ do
 	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath gid)
 	where
 	emailToAddress = Address Nothing . T.pack . show
-	param body k = lookup (T.pack k) body
-	tryReadRPS c = let c' = T.unpack c in
-		tryRead ("\""++c'++"\" is not one of: Rock, Paper, Scissors") c'
-	tryEmailParam body = maybeMsg "You didn't send an email address!"
-		(map T.unpack $ maybeBlank =<< param body "email")
-	tryParseEmail email = hoistEither $
-		fmapL (\err -> "Error parsing email <" ++ email ++ ">\n" ++ show err)
-			(EmailAddress.validate email)
