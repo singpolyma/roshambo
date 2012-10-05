@@ -15,10 +15,12 @@ data DatabaseMessage =
 	SetKey String RPSGame |
 	GetKey String (Chan (Maybe RPSGame))
 
-dbGet :: (MonadIO m) => Chan DatabaseMessage -> String -> m (Maybe RPSGame)
+type DatabaseConnection = Chan DatabaseMessage
+
+dbGet :: (MonadIO m) => DatabaseConnection -> String -> m (Maybe RPSGame)
 dbGet db k = syncCall db (GetKey k)
 
-dbSet :: (MonadIO m) => Chan DatabaseMessage -> String -> RPSGame -> m ()
+dbSet :: (MonadIO m) => DatabaseConnection -> String -> RPSGame -> m ()
 dbSet db k v = liftIO $ writeChan db (SetKey k v)
 
 syncCall :: (MonadIO m) => Chan a -> (Chan b -> a) -> m b
@@ -27,7 +29,7 @@ syncCall c v = liftIO $ do
 	writeChan c (v r)
 	readChan r
 
-database :: Chan DatabaseMessage -> IO ()
+database :: DatabaseConnection -> IO ()
 database chan = loop Map.empty
 	where
 	loop m = do

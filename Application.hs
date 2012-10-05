@@ -5,36 +5,33 @@ import Prelude (show)
 import BasicPrelude hiding (intercalate, show)
 
 import Data.Maybe (listToMaybe)
-import Data.Char (isAscii)
 import Numeric (showHex)
 import Data.String (IsString, fromString)
-import Control.Error (eitherT, throwT, hush, note, hoistEither, fmapL, readErr, EitherT(..), scriptIO)
+import Control.Error (hush, note, fmapL, readErr)
 import System.Random (randomR, getStdRandom)
+import System.IO.Error (ioeGetErrorString)
 
-import Network.Wai (Request(..), Response(..), responseLBS, responseSource)
-import Network.Wai.Parse (parseRequestBody, BackEnd, parseHttpAccept)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406, statusIsRedirection, Status(..), ResponseHeaders, Header)
-import Data.Conduit (($$), runResourceT, Flush(..), ResourceT)
-import Data.Conduit.List (fold, sinkNull)
-
-import qualified Data.ByteString as BS (split)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
+import Network.Wai (Request(..), Response(..))
+import Network.Wai.Parse (parseRequestBody, parseHttpAccept)
+import Network.Wai.Util
+import Network.Mail.Mime (Address(..), Mail(..), renderSendMail)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406)
+import Control.Monad.Trans.Resource (transResourceT, ResourceT)
 
 import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
-import Network.URI (URI(..), uriIsAbsolute)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import qualified Network.URI as URI
-import Network.Mail.Mime
-import qualified Data.Aeson as Aeson
-import qualified Blaze.ByteString.Builder as Builder
-import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
-import qualified Data.CaseInsensitive as CI
+import qualified Data.ByteString as BS (split)
 
+import EitherIO
 import MustacheTemplates
 import Database
 import Records
 #include "PathHelpers.hs"
+
+type ApplicationEitherIO = Request -> ResourceT EitherIO Response
 
 htmlEscape :: String -> String
 htmlEscape = concatMap escChar
@@ -44,90 +41,6 @@ htmlEscape = concatMap escChar
 	escChar '<' = "&lt;"
 	escChar '>' = "&gt;"
 	escChar c   = [c]
-
-uriRelativeTo :: URI -> URI -> URI
-uriRelativeTo other root = let Just uri = URI.relativeTo root other in uri
-
-noStoreFileUploads :: BackEnd ()
-noStoreFileUploads _ _ = sinkNull
-
-responseToMailPart :: (MonadIO m) => Bool -> Response -> m Part
-responseToMailPart asTxt r = do
-	body <- liftIO $ Builder.toLazyByteString `fmap` builderBody
-	return $ Part (T.decodeUtf8 contentType) contentEncode Nothing headers body
-	where
-	chunkFlatAppend m (Chunk more) = m `mappend` more
-	chunkFlatAppend m _ = m
-	headers = map (CI.original *** T.decodeUtf8) $ filter ((/=contentTypeName) . fst) headers'
-	contentType = fromMaybe defContentType $ lookup contentTypeName headers'
-	contentEncode  | asTxt     = QuotedPrintableText
-	               | otherwise = Base64
-	defContentType | asTxt     = fromString "text/plain; charset=utf-8"
-	               | otherwise = fromString "application/octet-stream"
-	builderBody = runResourceT $ body' $$ fold chunkFlatAppend mempty
-	(_, headers', body') = responseSource r
-	contentTypeName = fromString "Content-Type"
-
-mapHeader :: (ResponseHeaders -> ResponseHeaders) -> Response -> Response
-mapHeader f (ResponseFile s h b1 b2) = ResponseFile s (f h) b1 b2
-mapHeader f (ResponseBuilder s h b) = ResponseBuilder s (f h) b
-mapHeader f (ResponseSource s h b) = ResponseSource s (f h) b
-
-defHeader :: Header -> Response -> Response
-defHeader h = mapHeader (defHeader' h)
-
-defHeader' :: Header -> ResponseHeaders -> ResponseHeaders
-defHeader' (n, v) headers = case lookup n headers of
-		Just _  -> headers
-		Nothing -> (n, v):headers
-
-replaceHeader :: Header -> Response -> Response
-replaceHeader h = mapHeader (replaceHeader' h)
-
-replaceHeader' :: Header -> ResponseHeaders -> ResponseHeaders
-replaceHeader' (n, v) = ((n,v):) . filter ((/=n) . fst)
-
-string :: (MonadIO m) => Status -> ResponseHeaders -> String -> m Response
-string status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromString
-	where
-	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
-
-text :: (MonadIO m) => Status -> ResponseHeaders -> Text -> m Response
-text status headers = return . defHeader defCT . ResponseBuilder status headers . Builder.fromText
-	where
-	Just defCT = stringHeader ("Content-Type", "text/plain; charset=utf-8")
-
-json :: (MonadIO m, Aeson.ToJSON a) => Status -> ResponseHeaders -> a -> m Response
-json status headers = return . defHeader defCT . responseLBS status headers . Aeson.encode . Aeson.toJSON
-	where
-	Just defCT = stringHeader ("Content-Type", "application/json; charset=utf-8")
-
-redirect :: Status -> ResponseHeaders -> URI -> Maybe Response
-redirect status headers uri
-	| statusIsRedirection status && uriIsAbsolute uri = do
-		uriBS <- stringAscii (show uri)
-		return $ responseLBS status ((location, uriBS):headers) mempty
-	| otherwise = Nothing
-	where
-	Just location = stringAscii "Location"
-
-redirect' :: (Monad m) => Status -> ResponseHeaders -> URI -> m Response
-redirect' status headers uri =
-	let Just r = redirect status headers uri in return r
-
-stringAscii :: (IsString s) => String -> Maybe s
-stringAscii s
-	| all isAscii s = Just (fromString s)
-	| otherwise     = Nothing
-
-stringHeader :: (IsString s1, IsString s2) => (String, String) -> Maybe (s1, s2)
-stringHeader (n, v) = liftM2 (,) (stringAscii n) (stringAscii v)
-
-stringHeaders :: (IsString s1, IsString s2) => [(String, String)] -> Maybe [(s1, s2)]
-stringHeaders = mapM stringHeader
-
-stringHeaders' :: (IsString s1, IsString s2) => [(String, String)] -> [(s1, s2)]
-stringHeaders' hs = let Just headers = stringHeaders hs in headers
 
 data Pattern a = PatternAny | PatternExactly a
 
@@ -149,11 +62,6 @@ selectAcceptType supported accept = case supported' of
 	parseAccept s = let (t:sub:_) = BS.split 0x2f s in
 		(parsePattern t, parsePattern sub)
 
-bodyBytestring :: Request -> ResourceT IO ByteString
-bodyBytestring req = requestBody req $$ fold (++) empty
-
-on404 _ = string notFound404 [] "Not Found"
-
 appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
 
@@ -161,6 +69,9 @@ errorPage :: (MonadIO m, Functor m) => String -> m Response
 errorPage msg = return $ ResponseBuilder badRequest400 headers (viewError htmlEscape $ ErrorMessage msg)
 	where
 	Just headers = stringHeaders [("Content-Type", "text/html; charset=utf8")]
+
+on404 :: ApplicationEitherIO
+on404 _ = string notFound404 [] "Not Found"
 
 rpsWinner :: (EmailAddress, RPSChoice) -> (EmailAddress, RPSChoice) -> Maybe EmailAddress
 rpsWinner (e,Paper)    (_,Rock)     = Just e
@@ -171,7 +82,6 @@ rpsWinner (e,Scissors) (_,Paper)    = Just e
 rpsWinner (_,Paper)    (e,Scissors) = Just e
 rpsWinner _ _ = Nothing
 
-
 ctxChoice :: (EmailAddress,RPSChoice) -> ChoiceRecord
 ctxChoice (e,c) = ChoiceRecord (show e) (show c)
 
@@ -181,19 +91,18 @@ ctx (Just (RPSGameFinish a b)) =
 	GameContext (map show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
 ctx _ = GameContext Nothing False []
 
-home root db _ = do
-	id <- uniqId
-	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath id)
+home :: URI -> DatabaseConnection -> ApplicationEitherIO
+home root db _ = liftIO uniqId >>=
+	redirect' seeOther303 [] . URI.relativeTo root . showGamePath
 	where
-	-- Can't liftIO the do block directly because of the loop
-	uniqId = liftIO uniqId'
-	uniqId' = do
+	uniqId = do
 		id <- (`showHex` "") <$> getStdRandom (randomR (minBound,maxBound :: Word32))
 		v <- dbGet db id
 		case v of
 			Nothing -> return id
-			_ -> uniqId'
+			_ -> uniqId
 
+showGame :: URI -> DatabaseConnection -> String -> ApplicationEitherIO
 showGame _ db id req = do
 	context <- ctx <$> dbGet db id
 	case acceptType of
@@ -225,7 +134,7 @@ blankNotPresent t
 parseCreateChoiceRequest :: [(Text, Text)] -> Either String (EmailAddress, RPSChoice)
 parseCreateChoiceRequest body = (,)
 	<$> requiredParam "You didn't send an email address!" blankNotPresent parseEmailErr (T.pack "email") body
-	<*> requiredParam "You didn't send a choice!" Just readRPSErr (T.pack "choice") body
+	<*> requiredParam "You didn't send a choice!" blankNotPresent readRPSErr (T.pack "choice") body
 	where
 	readRPSErr choiceText = let c = T.unpack choiceText in
 		readErr ("\""++c++"\" is not one of: Rock, Paper, Scissors") c
@@ -233,28 +142,29 @@ parseCreateChoiceRequest body = (,)
 		fmapL (\err -> "Error parsing email <" ++ e ++ ">\n" ++ show err)
 			(EmailAddress.validate e)
 
-createChoice root db gid req = eitherT errorPage return $ do
-	(body, _) <- lift $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
-	(email, choice) <- hoistEither $ parseCreateChoiceRequest body
-	v <- scriptIO $ dbGet db gid
+createChoice :: URI -> DatabaseConnection -> String -> ApplicationEitherIO
+createChoice root db gid req = transResourceT (eitherIO (errorPage.ioeGetErrorString) return) $ do
+	(body, _) <- transResourceT liftIO $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
+	(email, choice) <- lift $ hoistIO $ return $ fmapL userError $ parseCreateChoiceRequest body
+	v <- liftIO $ dbGet db gid
 	case v of
-		Nothing -> scriptIO $ dbSet db gid (RPSGameStart (email,choice))
+		Nothing -> liftIO $ dbSet db gid (RPSGameStart (email,choice))
 		Just (RPSGameStart a) -> do
 			let rpsGame = RPSGameFinish a (email, choice)
 			let context = ctx (Just rpsGame)
 			let winTxt = case winner context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
-			scriptIO $ dbSet db gid rpsGame
+			liftIO $ dbSet db gid rpsGame
 			mailBody <- responseToMailPart True $ ResponseBuilder ok200 [] (viewEmail id context)
-			scriptIO $ renderSendMail Mail {
+			liftIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress email],
 					mailCc      = [], mailBcc  = [],
 					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++gid++"] " ++ winTxt)],
 					mailParts   = [[mailBody]]
 				}
-		_ -> throwT "You cannot make a new choice on a completed game!"
-	redirect' seeOther303 [] (uriRelativeTo root $ showGamePath gid)
+		_ -> failIO "You cannot make a new choice on a completed game!"
+	redirect' seeOther303 [] (URI.relativeTo root $ showGamePath gid)
 	where
 	emailToAddress = Address Nothing . T.pack . show
