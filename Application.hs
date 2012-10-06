@@ -4,7 +4,6 @@ module Application where
 import Prelude (show)
 import BasicPrelude hiding (intercalate, show)
 
-import Data.Maybe (listToMaybe)
 import Numeric (showHex)
 import Data.String (IsString, fromString)
 import Control.Error (hush, note, fmapL, readErr)
@@ -14,6 +13,7 @@ import System.IO.Error (ioeGetErrorString)
 import Network.Wai (Request(..), Response(..))
 import Network.Wai.Parse (parseRequestBody, parseHttpAccept)
 import Network.Wai.Util
+import Network.HTTP.Accept (selectAcceptType)
 import Network.Mail.Mime (Address(..), Mail(..), renderSendMail)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406)
 import Control.Monad.Trans.Resource (transResourceT, ResourceT)
@@ -23,7 +23,6 @@ import qualified Text.Email.Validate as EmailAddress (validate)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Network.URI as URI
-import qualified Data.ByteString as BS (split)
 
 import EitherIO
 import MustacheTemplates
@@ -41,26 +40,6 @@ htmlEscape = concatMap escChar
 	escChar '<' = "&lt;"
 	escChar '>' = "&gt;"
 	escChar c   = [c]
-
-data Pattern a = PatternAny | PatternExactly a
-
-instance (Eq a) => Eq (Pattern a) where
-	PatternAny == _ = True
-	_ == PatternAny = True
-	(PatternExactly a) == (PatternExactly b) = a == b
-
-selectAcceptType :: [String] -> [ByteString] -> Maybe String
-selectAcceptType supported accept = case supported' of
-	Just sup -> listToMaybe $ mapMaybe (`lookup` sup) accept'
-	Nothing -> Nothing
-	where
-	accept' = map parseAccept accept
-	supported' = fmap (`zip` supported)
-		(mapM (fmap parseAccept . stringAscii) supported)
-	parsePattern s | s == fromString "*" = PatternAny
-	               | otherwise = PatternExactly s
-	parseAccept s = let (t:sub:_) = BS.split 0x2f s in
-		(parsePattern t, parsePattern sub)
 
 appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
