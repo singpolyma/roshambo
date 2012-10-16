@@ -31,6 +31,10 @@ import Database
 import Records
 #include "PathHelpers.hs"
 
+-- https://github.com/snoyberg/basic-prelude/issues/23
+intercalate :: (Monoid w) => w -> [w] -> w
+intercalate xs xss = mconcat (intersperse xs xss)
+
 type ApplicationEitherIO = Request -> ResourceT EitherIO Response
 
 htmlEscape :: String -> String
