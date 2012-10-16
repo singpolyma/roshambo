@@ -22,7 +22,8 @@ import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Network.URI as URI
+import Network.URI (URI)
+import qualified Network.URI.Partial as PartialURI
 
 import EitherIO
 import MustacheTemplates
@@ -72,7 +73,7 @@ ctx _ = GameContext Nothing False []
 
 home :: URI -> DatabaseConnection -> ApplicationEitherIO
 home root db _ = liftIO uniqId >>=
-	redirect' seeOther303 [] . URI.relativeTo root . showGamePath
+	redirect' seeOther303 [] . (`PartialURI.relativeTo` root) . showGamePath
 	where
 	uniqId = do
 		id <- (`showHex` "") <$> getStdRandom (randomR (minBound,maxBound :: Word32))
@@ -144,6 +145,6 @@ createChoice root db gid req = transResourceT (eitherIO (errorPage.ioeGetErrorSt
 					mailParts   = [[mailBody]]
 				}
 		_ -> failIO "You cannot make a new choice on a completed game!"
-	redirect' seeOther303 [] (URI.relativeTo root $ showGamePath gid)
+	redirect' seeOther303 [] (showGamePath gid `PartialURI.relativeTo` root)
 	where
 	emailToAddress = Address Nothing . T.pack . show
