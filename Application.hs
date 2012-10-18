@@ -6,17 +6,15 @@ import BasicPrelude hiding (intercalate, show)
 
 import Numeric (showHex)
 import Data.String (IsString, fromString)
-import Control.Error (hush, note, fmapL, readErr)
+import Control.Error (hush, note, fmapL, readErr, hoistEither, throwT, scriptIO, eitherT)
 import System.Random (randomR, getStdRandom)
-import System.IO.Error (ioeGetErrorString)
 
-import Network.Wai (Request(..), Response(..))
+import Network.Wai (Request(..), Response(..), Application)
 import Network.Wai.Parse (parseRequestBody, parseHttpAccept)
 import Network.Wai.Util
 import Network.HTTP.Accept (selectAcceptType)
 import Network.Mail.Mime (Address(..), Mail(..), renderSendMail)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406)
-import Control.Monad.Trans.Resource (transResourceT, ResourceT)
 
 import Text.Email.Validate (EmailAddress)
 import qualified Text.Email.Validate as EmailAddress (validate)
@@ -25,7 +23,6 @@ import qualified Data.Text.Encoding as T
 import Network.URI (URI)
 import qualified Network.URI.Partial as PartialURI
 
-import EitherIO
 import MustacheTemplates
 import Database
 import Records
@@ -34,8 +31,6 @@ import Records
 -- https://github.com/snoyberg/basic-prelude/issues/23
 intercalate :: (Monoid w) => w -> [w] -> w
 intercalate xs xss = mconcat (intersperse xs xss)
-
-type ApplicationEitherIO = Request -> ResourceT EitherIO Response
 
 htmlEscape :: String -> String
 htmlEscape = concatMap escChar
@@ -54,7 +49,7 @@ errorPage msg = return $ ResponseBuilder badRequest400 headers (viewError htmlEs
 	where
 	Just headers = stringHeaders [("Content-Type", "text/html; charset=utf8")]
 
-on404 :: ApplicationEitherIO
+on404 :: Application
 on404 _ = string notFound404 [] "Not Found"
 
 rpsWinner :: (EmailAddress, RPSChoice) -> (EmailAddress, RPSChoice) -> Maybe EmailAddress
@@ -75,7 +70,7 @@ ctx (Just (RPSGameFinish a b)) =
 	GameContext (map show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
 ctx _ = GameContext Nothing False []
 
-home :: URI -> DatabaseConnection -> ApplicationEitherIO
+home :: URI -> DatabaseConnection -> Application
 home root db _ = liftIO uniqId >>=
 	redirect' seeOther303 [] . (`PartialURI.relativeTo` root) . showGamePath
 	where
@@ -86,7 +81,7 @@ home root db _ = liftIO uniqId >>=
 			Nothing -> return id
 			_ -> uniqId
 
-showGame :: URI -> DatabaseConnection -> String -> ApplicationEitherIO
+showGame :: URI -> DatabaseConnection -> String -> Application
 showGame _ db id req = do
 	context <- ctx <$> dbGet db id
 	case acceptType of
@@ -126,29 +121,29 @@ parseCreateChoiceRequest body = (,)
 		fmapL (\err -> "Error parsing email <" ++ e ++ ">\n" ++ show err)
 			(EmailAddress.validate e)
 
-createChoice :: URI -> DatabaseConnection -> String -> ApplicationEitherIO
-createChoice root db gid req = transResourceT (eitherIO (errorPage.ioeGetErrorString) return) $ do
-	(body, _) <- transResourceT liftIO $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
-	(email, choice) <- lift $ hoistIO $ return $ fmapL userError $ parseCreateChoiceRequest body
-	v <- liftIO $ dbGet db gid
+createChoice :: URI -> DatabaseConnection -> String -> Application
+createChoice root db gid req = eitherT errorPage return $ do
+	(body, _) <- lift $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
+	(email, choice) <- hoistEither $ parseCreateChoiceRequest body
+	v <- scriptIO $ dbGet db gid
 	case v of
-		Nothing -> liftIO $ dbSet db gid (RPSGameStart (email,choice))
+		Nothing -> scriptIO $ dbSet db gid (RPSGameStart (email,choice))
 		Just (RPSGameStart a) -> do
 			let rpsGame = RPSGameFinish a (email, choice)
 			let context = ctx (Just rpsGame)
 			let winTxt = case winner context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
-			liftIO $ dbSet db gid rpsGame
+			scriptIO $ dbSet db gid rpsGame
 			mailBody <- responseToMailPart True $ ResponseBuilder ok200 [] (viewEmail id context)
-			liftIO $ renderSendMail Mail {
+			scriptIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress email],
 					mailCc      = [], mailBcc  = [],
 					mailHeaders = [(fromString "Subject", T.pack $ "[Roshambo "++gid++"] " ++ winTxt)],
 					mailParts   = [[mailBody]]
 				}
-		_ -> failIO "You cannot make a new choice on a completed game!"
+		_ -> throwT "You cannot make a new choice on a completed game!"
 	redirect' seeOther303 [] (showGamePath gid `PartialURI.relativeTo` root)
 	where
 	emailToAddress = Address Nothing . T.pack . show
