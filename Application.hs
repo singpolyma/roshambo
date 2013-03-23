@@ -84,18 +84,13 @@ home root db _ = liftIO uniqId >>=
 showGame :: URI -> DatabaseConnection -> String -> Application
 showGame _ db id req = do
 	context <- ctx <$> dbGet db id
-	case acceptType of
-		"text/html" ->
-			return $ ResponseBuilder ok200 htmlHeader (viewRps htmlEscape context)
-		"application/json" ->
-			json ok200 [] context
-		_ -> string notAcceptable406 [] (intercalate "\n" supportedTypes)
+	handleAcceptTypes [
+		("text/html",
+			return $ ResponseBuilder ok200 htmlHeader (viewRps htmlEscape context)),
+		("application/json", json ok200 [] context)
+		] req
 	where
 	Just htmlHeader = stringHeaders [("Content-Type", "text/html; charset=utf8")]
-	acceptType = fromMaybe (head supportedTypes) acceptType'
-	acceptType' = (selectAcceptType supportedTypes . parseHttpAccept) =<<
-		lookup (fromString "Accept") (requestHeaders req)
-	supportedTypes = ["text/html", "application/json"]
 
 requiredParam :: (Eq k) => e -> (v -> Maybe v) -> (v -> Either e a) -> k -> [(k, v)] -> Either e a
 requiredParam notPresent maybePresent parser k =
