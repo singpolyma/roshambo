@@ -3,6 +3,14 @@ module Records where
 import qualified Data.Text as T
 import qualified Data.Aeson as Aeson
 
+import Data.Text.Buildable
+import Text.Blaze.Html (Html)
+import Text.Blaze.Internal (MarkupM)
+import Text.Blaze.Html.Renderer.Text (renderHtmlBuilder)
+
+instance Buildable (MarkupM a) where
+	build = renderHtmlBuilder . fmap (const ())
+
 data ErrorMessage = ErrorMessage {
 	errorMessage :: String
 }
@@ -10,7 +18,8 @@ data ErrorMessage = ErrorMessage {
 data GameContext = GameContext {
 	winner :: Maybe String,
 	finished :: Bool,
-	choices :: [ChoiceRecord]
+	choices :: [ChoiceRecord],
+	form :: Html
 }
 
 data ChoiceRecord = ChoiceRecord {
@@ -19,7 +28,7 @@ data ChoiceRecord = ChoiceRecord {
 }
 
 instance Aeson.ToJSON GameContext where
-	toJSON (GameContext w f _) = Aeson.object [
+	toJSON (GameContext w f _ _) = Aeson.object [
 			(T.pack "winner", Aeson.toJSON w),
 			(T.pack "finished", Aeson.toJSON f)
 		]

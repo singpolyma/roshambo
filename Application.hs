@@ -14,10 +14,11 @@ import Network.Mail.Mime (Address(..), Mail(..), renderSendMail)
 import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400)
 
 import Network.Wai.Digestive (bodyFormEnv_)
-import SimpleForm.Digestive.Combined (SimpleForm', postSimpleForm, input_)
-import SimpleForm.Combined (SelectEnum(..), unSelectEnum)
+import SimpleForm.Digestive.Combined (SimpleForm', getSimpleForm, postSimpleForm, input)
+import SimpleForm.Combined (SelectEnum(..), unSelectEnum, enum, buttons, InputOptions(..), wdef, vdef)
 import SimpleForm.Render.XHTML5 (render)
 
+import Text.Blaze.Html (Html)
 import Text.Email.Validate (EmailAddress)
 import qualified Data.Text as T
 import Network.URI (URI)
@@ -63,7 +64,7 @@ rpsWinner _ _ = Nothing
 ctxChoice :: (EmailAddress,RPSChoice) -> ChoiceRecord
 ctxChoice (e,c) = ChoiceRecord (show e) (show c)
 
-ctx :: Maybe RPSGame -> GameContext
+ctx :: Maybe RPSGame -> Html -> GameContext
 ctx (Just (RPSGameStart a)) = GameContext Nothing False [ctxChoice a]
 ctx (Just (RPSGameFinish a b)) =
 	GameContext (map show $ rpsWinner a b) True [ctxChoice a, ctxChoice b]
@@ -82,7 +83,8 @@ home root db _ = liftIO uniqId >>=
 
 showGame :: URI -> DatabaseConnection -> String -> Application
 showGame _ db id req = do
-	context <- ctx <$> dbGet db id
+	context <- ctx <$> dbGet db id <*>
+		getSimpleForm render Nothing createChoiceForm
 	handleAcceptTypes [
 		("text/html",
 			textBuilder ok200 htmlHeader (viewRps htmlEscape context)),
@@ -93,19 +95,20 @@ showGame _ db id req = do
 
 createChoiceForm :: (Monad m) => SimpleForm' m (EmailAddress, RPSChoice)
 createChoiceForm = do
-	email' <- input_ (s"email") (Just . fst)
-	choice' <- input_ (s"choice") (Just . SelectEnum . snd)
+	email' <- input (s"email") (Just . fst) (wdef,vdef) (mempty {label = Nothing})
+	choice' <- input (s"choice") (Just . SelectEnum . snd) (enum buttons) (mempty { label = Nothing })
 	return $ (,) <$> email' <*> fmap unSelectEnum choice'
 
 createChoice :: URI -> DatabaseConnection -> String -> Application
 createChoice root db gid req = eitherT errorPage return $ do
 	(email, choice) <- EitherT $ fmap (note "Invalid selection" . snd) $ postSimpleForm render (bodyFormEnv_ req) createChoiceForm
+	liftIO $ print (email, choice)
 	v <- scriptIO $ dbGet db gid
 	case v of
 		Nothing -> scriptIO $ dbSet db gid (RPSGameStart (email,choice))
 		Just (RPSGameStart a) -> do
 			let rpsGame = RPSGameFinish a (email, choice)
-			let context = ctx (Just rpsGame)
+			let context = ctx (Just rpsGame) mempty
 			let winTxt = case winner context of
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
