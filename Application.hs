@@ -2,24 +2,24 @@
 module Application where
 
 import Prelude (show)
-import BasicPrelude hiding (intercalate, show)
+import BasicPrelude hiding (show)
 
 import Numeric (showHex)
-import Data.String (IsString, fromString)
-import Control.Error (hush, note, fmapL, readErr, hoistEither, throwT, scriptIO, eitherT)
+import Control.Error (note, throwT, scriptIO, eitherT, EitherT(..))
 import System.Random (randomR, getStdRandom)
 
-import Network.Wai (Request(..), Response(..), Application)
-import Network.Wai.Parse (parseRequestBody, parseHttpAccept)
+import Network.Wai (Response(..), Application)
 import Network.Wai.Util
-import Network.HTTP.Accept (selectAcceptType)
 import Network.Mail.Mime (Address(..), Mail(..), renderSendMail)
-import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400, notAcceptable406)
+import Network.HTTP.Types (ok200, notFound404, seeOther303, badRequest400)
+
+import Network.Wai.Digestive (bodyFormEnv_)
+import SimpleForm.Digestive.Combined (SimpleForm', postSimpleForm, input_)
+import SimpleForm.Combined (SelectEnum(..), unSelectEnum)
+import SimpleForm.Render.XHTML5 (render)
 
 import Text.Email.Validate (EmailAddress)
-import qualified Text.Email.Validate as EmailAddress (validate)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import Network.URI (URI)
 import qualified Network.URI.Partial as PartialURI
 
@@ -28,9 +28,8 @@ import Database
 import Records
 #include "PathHelpers.hs"
 
--- https://github.com/snoyberg/basic-prelude/issues/23
-intercalate :: (Monoid w) => w -> [w] -> w
-intercalate xs xss = mconcat (intersperse xs xss)
+s :: (IsString s) => String -> s
+s = fromString
 
 htmlEscape :: String -> String
 htmlEscape = concatMap escChar
@@ -45,7 +44,7 @@ appEmail :: Address
 appEmail = Address (Just $ T.pack "Roshambo App") (T.pack "roshambo@example.com")
 
 errorPage :: (MonadIO m, Functor m) => String -> m Response
-errorPage msg = return $ ResponseBuilder badRequest400 headers (viewError htmlEscape $ ErrorMessage msg)
+errorPage msg = textBuilder badRequest400 headers (viewError htmlEscape $ ErrorMessage msg)
 	where
 	Just headers = stringHeaders [("Content-Type", "text/html; charset=utf8")]
 
@@ -86,40 +85,21 @@ showGame _ db id req = do
 	context <- ctx <$> dbGet db id
 	handleAcceptTypes [
 		("text/html",
-			return $ ResponseBuilder ok200 htmlHeader (viewRps htmlEscape context)),
+			textBuilder ok200 htmlHeader (viewRps htmlEscape context)),
 		("application/json", json ok200 [] context)
 		] req
 	where
 	Just htmlHeader = stringHeaders [("Content-Type", "text/html; charset=utf8")]
 
-requiredParam :: (Eq k) => e -> (v -> Maybe v) -> (v -> Either e a) -> k -> [(k, v)] -> Either e a
-requiredParam notPresent maybePresent parser k =
-	parser <=< note notPresent . (maybePresent <=< lookup k)
-
-optionalParam :: (Eq k) => (v -> Maybe v) -> (v -> Either e a) -> k -> [(k, v)] -> Maybe a
-optionalParam maybePresent parser k =
-	hush . parser <=< maybePresent <=< lookup k
-
-blankNotPresent :: Text -> Maybe Text
-blankNotPresent t
-	| T.null t  = Nothing
-	| otherwise = Just t
-
-parseCreateChoiceRequest :: [(Text, Text)] -> Either String (EmailAddress, RPSChoice)
-parseCreateChoiceRequest body = (,)
-	<$> requiredParam "You didn't send an email address!" blankNotPresent parseEmailErr (T.pack "email") body
-	<*> requiredParam "You didn't send a choice!" blankNotPresent readRPSErr (T.pack "choice") body
-	where
-	readRPSErr choiceText = let c = T.unpack choiceText in
-		readErr ("\""++c++"\" is not one of: Rock, Paper, Scissors") c
-	parseEmailErr emailText = let e = T.unpack emailText in
-		fmapL (\err -> "Error parsing email <" ++ e ++ ">\n" ++ show err)
-			(EmailAddress.validate e)
+createChoiceForm :: (Monad m) => SimpleForm' m (EmailAddress, RPSChoice)
+createChoiceForm = do
+	email' <- input_ (s"email") (Just . fst)
+	choice' <- input_ (s"choice") (Just . SelectEnum . snd)
+	return $ (,) <$> email' <*> fmap unSelectEnum choice'
 
 createChoice :: URI -> DatabaseConnection -> String -> Application
 createChoice root db gid req = eitherT errorPage return $ do
-	(body, _) <- lift $ first (map (T.decodeUtf8 *** T.decodeUtf8)) <$> parseRequestBody noStoreFileUploads req
-	(email, choice) <- hoistEither $ parseCreateChoiceRequest body
+	(email, choice) <- EitherT $ fmap (note "Invalid selection" . snd) $ postSimpleForm render (bodyFormEnv_ req) createChoiceForm
 	v <- scriptIO $ dbGet db gid
 	case v of
 		Nothing -> scriptIO $ dbSet db gid (RPSGameStart (email,choice))
@@ -130,7 +110,7 @@ createChoice root db gid req = eitherT errorPage return $ do
 				Just e -> show e ++ " wins!"
 				Nothing -> "It's a tie!"
 			scriptIO $ dbSet db gid rpsGame
-			mailBody <- responseToMailPart True $ ResponseBuilder ok200 [] (viewEmail id context)
+			mailBody <- responseToMailPart True =<< textBuilder ok200 [] (viewEmail id context)
 			scriptIO $ renderSendMail Mail {
 					mailFrom    = appEmail,
 					mailTo      = [emailToAddress (fst a), emailToAddress email],

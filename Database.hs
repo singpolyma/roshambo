@@ -1,11 +1,11 @@
 module Database where
 
 import Control.Concurrent (Chan, newChan, readChan, writeChan)
-import Control.Monad.Trans (MonadIO, liftIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Text.Email.Validate (EmailAddress)
 import qualified Data.Map as Map
 
-data RPSChoice = Rock | Paper | Scissors deriving (Read, Show, Eq)
+data RPSChoice = Rock | Paper | Scissors deriving (Read, Show, Eq, Bounded, Enum)
 
 data RPSGame =
 	RPSGameStart (EmailAddress, RPSChoice) |
